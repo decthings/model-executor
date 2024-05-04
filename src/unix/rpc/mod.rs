@@ -1,17 +1,14 @@
-mod segments;
+pub mod segments;
 pub mod types;
 
 use atomic_counter::AtomicCounter;
 use std::{collections::HashMap, future::Future, path::Path, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+pub use segments::AdditionalSegments;
+
 pub const MESSAGE_BYTE: u8 = 0;
 pub const DATA_BYTE: u8 = 1;
-
-pub struct AdditionalSegments<'a> {
-    pub amount: u32,
-    pub reader: &'a mut tokio::net::unix::OwnedReadHalf,
-}
 
 #[auto_impl::auto_impl(&, Rc, Box)]
 pub trait ChildEventCallbacks {
@@ -19,8 +16,8 @@ pub trait ChildEventCallbacks {
     fn on_event<'a>(
         &'a self,
         event: types::EventMessage,
-        additional_segments: Option<AdditionalSegments<'a>>,
-    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+        additional_segments: impl AdditionalSegments + Send + 'a,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     #[must_use]
     fn on_data_event<'a>(
@@ -39,8 +36,11 @@ pub enum CallMethodOnChildError {
 type ResponseCallback = Box<
     dyn for<'b> FnOnce(
             String,
-            Result<(serde_json::Value, Option<AdditionalSegments<'b>>), CallMethodOnChildError>,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'b>>
+            Result<
+                (serde_json::Value, Box<dyn AdditionalSegments + Send + 'b>),
+                CallMethodOnChildError,
+            >,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
         + Send
         + 'static,
 >;
@@ -71,14 +71,10 @@ impl ChildRpcListener {
                     self.unix_reader.read_exact(&mut first_segment).await?;
 
                     {
-                        let additional_segments = if num_additional_segments == 0 {
-                            None
-                        } else {
-                            Some(AdditionalSegments {
-                                amount: num_additional_segments,
-                                reader: &mut self.unix_reader
-                            })
-                        };
+                        let mut additional_segments = segments::AdditionalSegmentsFromSocket::new(
+                            &mut self.unix_reader,
+                            num_additional_segments,
+                        );
 
                         match serde_json::from_slice::<ResultOrEvent>(&first_segment).unwrap() {
                             ResultOrEvent::Result(val) => {
@@ -97,30 +93,34 @@ impl ChildRpcListener {
                                 if let Some(resolve) = resolve {
                                     resolve(
                                         val.id,
-                                        Ok((val.result, additional_segments)),
+                                        Ok((val.result, Box::new(&mut additional_segments))),
                                     )
-                                    .await
-                                    .map_err(|_| None)?;
-                                }
-                            },
-                            ResultOrEvent::Event(ev) => {
-                                log::trace!("Got event from spawned model #{}: {ev:?}", self.model_count);
-
-                                if !on_event.on_event(ev, additional_segments).await {
-                                    log::info!(
-                                        "Closing RPC to spawned model #{} because it seems we got an invalid event message.",
-                                        self.model_count,
-                                    );
-                                    return Ok(true);
+                                    .await;
                                 }
                             }
+                            ResultOrEvent::Event(ev) => {
+                                log::trace!(
+                                    "Got event from spawned model #{}: {ev:?}",
+                                    self.model_count
+                                );
+
+                                on_event
+                                    .on_event(ev, Box::new(&mut additional_segments))
+                                    .await;
+                            }
                         }
+
+                        if additional_segments.did_err() {
+                            return Err(None);
+                        }
+
+                        additional_segments.skip_all().await?;
                     }
 
                     // Read one extra byte to make the API compatible with host. This is the
                     // "success" byte, which the vmlauncher uses but we can ignore.
                     self.unix_reader.read_u8().await?;
-                    Ok::<_, Option<std::io::Error>>(false)
+                    Ok::<_, Option<std::io::Error>>(())
                 } else {
                     let data_event_length = self.unix_reader.read_u64().await? as usize;
 
@@ -129,25 +129,22 @@ impl ChildRpcListener {
 
                     let parsed: types::DataEvent = serde_json::from_slice(&data_event).unwrap();
 
-                    log::trace!("Got data event from spawned model #{}: {parsed:?}", self.model_count);
+                    log::trace!(
+                        "Got data event from spawned model #{}: {parsed:?}",
+                        self.model_count
+                    );
 
                     on_event.on_data_event(parsed).await;
-                    Ok::<_, Option<std::io::Error>>(false)
+                    Ok::<_, Option<std::io::Error>>(())
                 }
-            }.await;
-            match res {
-                Ok(should_exit) => {
-                    if should_exit {
-                        return;
-                    }
-                }
-                Err(err) => {
-                    log::info!(
-                        "Read from spawned model #{} Unix socket failed with error: {err:?}",
-                        self.model_count,
-                    );
-                    return;
-                }
+            }
+            .await;
+            if let Err(e) = res {
+                log::info!(
+                    "Read from spawned model #{} unix socket failed with error: {e:?}",
+                    self.model_count,
+                );
+                return;
             }
         }
     }
@@ -201,7 +198,7 @@ impl ChildRpc {
                 };
                 if let Some(f) = response_cb {
                     // This should be the case, otherwise we really quickly got a response
-                    (f)(id, Err(CallMethodOnChildError::Io(err))).await.unwrap();
+                    (f)(id, Err(CallMethodOnChildError::Io(err))).await;
                 }
             }
         })
@@ -223,7 +220,6 @@ impl ChildRpc {
                         serde_json::from_value(res).map_err(CallMethodOnChildError::Json)
                     });
                     tx.send(res).ok();
-                    Ok(())
                 })
             }),
         );
@@ -249,7 +245,6 @@ impl ChildRpc {
                         serde_json::from_value(res).map_err(CallMethodOnChildError::Json)
                     });
                     tx.send(res).ok();
-                    Ok(())
                 })
             }),
         );
@@ -275,7 +270,6 @@ impl ChildRpc {
                         serde_json::from_value(res).map_err(CallMethodOnChildError::Json)
                     });
                     tx.send(res).ok();
-                    Ok(())
                 })
             }),
         );
@@ -291,10 +285,13 @@ impl ChildRpc {
         result_cb: impl for<'b> FnOnce(
                 String,
                 Result<
-                    (types::EvaluateResult, Option<AdditionalSegments<'b>>),
+                    (
+                        types::EvaluateResult,
+                        Box<dyn AdditionalSegments + Send + 'b>,
+                    ),
                     CallMethodOnChildError,
                 >,
-            ) -> Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'b>>
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
             + Send
             + 'static,
     ) -> (String, impl Future<Output = ()> + 'a) {
@@ -302,15 +299,12 @@ impl ChildRpc {
             types::CommandMessageWithResponse::CallEvaluate(params),
             Box::new(|id, res| {
                 Box::pin(async move {
-                    match res {
-                        Ok((res, additional_segments)) => {
-                            let res = serde_json::from_value(res).map_err(|e| {
-                                log::warn!("Invalid response from child for evaluate. JSON parse failed: {e:?}")
-                            })?;
-                            result_cb(id, Ok((res, additional_segments))).await
-                        }
-                        Err(e) => result_cb(id, Err(e)).await,
-                    }
+                    let res = res.and_then(|(res, additional_segments)| {
+                        serde_json::from_value(res)
+                            .map_err(CallMethodOnChildError::Json)
+                            .map(|res| (res, additional_segments))
+                    });
+                    result_cb(id, res).await;
                 })
             }),
         )
@@ -332,7 +326,6 @@ impl ChildRpc {
                         serde_json::from_value(res).map_err(CallMethodOnChildError::Json)
                     });
                     tx.send(res).ok();
-                    Ok(())
                 })
             }),
         );
@@ -394,34 +387,29 @@ impl ChildRpc {
             std::mem::take(&mut *awaiting_responses)
         };
         for (id, f) in awaiting_responses {
-            f(id, Err(CallMethodOnChildError::Cancelled)).await.unwrap();
+            f(id, Err(CallMethodOnChildError::Cancelled)).await;
         }
     }
 
     pub async fn provide_data(
         &self,
         request_id: u32,
-        num_segments: u32,
-        segments_reader: impl tokio::io::AsyncRead + Unpin,
+        mut additional_segments: impl AdditionalSegments,
     ) -> Result<(), tokio::io::Error> {
         log::trace!(
-            "Providing {num_segments} data segments for data request {request_id} to spawned model #{}",
+            "Providing {} data segments for data request {request_id} to spawned model #{}",
+            additional_segments.amount(),
             self.model_count,
         );
 
         let mut writer = self.unix_socket.lock().await;
-        let maybe_err = async {
-            writer.write_u8(DATA_BYTE).await?;
-            writer.write_u32(request_id).await?;
-            writer.write_u32(num_segments).await?;
-            Ok::<_, tokio::io::Error>(())
+        writer.write_u8(DATA_BYTE).await?;
+        writer.write_u32(request_id).await?;
+        writer.write_u32(additional_segments.amount()).await?;
+        while let Some((size, mut reader)) = additional_segments.next().await? {
+            writer.write_u64(size).await?;
+            tokio::io::copy(&mut reader, &mut *writer).await?;
         }
-        .await;
-        if let Err(e) = maybe_err {
-            let _ = segments::discard_additional_segments(segments_reader, num_segments).await;
-            return Err(e);
-        }
-        segments::write_additional_segments(num_segments, segments_reader, &mut *writer).await?;
         writer.flush().await?;
         Ok(())
     }

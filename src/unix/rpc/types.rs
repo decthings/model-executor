@@ -176,6 +176,7 @@ pub struct GetModelStateResult {
     pub error: Option<GetModelStateError>,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(tag = "method", content = "params")]
@@ -207,6 +208,7 @@ pub(crate) enum CommandMessageWithResponseWithId<'a> {
     },
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CommandMessageWithResponse<'a> {
     CallCreateModelState(&'a CreateModelStateCommand),
