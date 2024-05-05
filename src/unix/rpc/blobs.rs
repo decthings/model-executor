@@ -1,5 +1,6 @@
 use futures::future::BoxFuture;
 use std::{
+    marker::PhantomData,
     pin::Pin,
     sync::Arc,
     task::{ready, Poll},
@@ -21,27 +22,29 @@ pub trait Blobs {
     >;
 }
 
-pub struct VecBlobs<S: AsRef<[u8]> + Send> {
-    data: Vec<S>,
+pub struct ListBlobs<L: AsRef<[S]> + Send, S: AsRef<[u8]> + Send> {
+    phantom: PhantomData<S>,
+    data: L,
     index: usize,
 }
 
-impl<S: AsRef<[u8]> + Send> From<Vec<S>> for VecBlobs<S> {
-    fn from(value: Vec<S>) -> Self {
+impl<L: AsRef<[S]> + Send, S: AsRef<[u8]> + Send> From<L> for ListBlobs<L, S> {
+    fn from(value: L) -> Self {
         Self {
+            phantom: PhantomData,
             data: value,
             index: 0,
         }
     }
 }
 
-impl<S: AsRef<[u8]> + Send> Blobs for VecBlobs<S> {
+impl<L: AsRef<[S]> + Send, S: AsRef<[u8]> + Send> Blobs for ListBlobs<L, S> {
     fn amount(&self) -> u32 {
-        self.data.len().try_into().unwrap()
+        self.data.as_ref().len().try_into().unwrap()
     }
 
     fn remaining(&self) -> u32 {
-        (self.data.len() - self.index).try_into().unwrap()
+        (self.data.as_ref().len() - self.index).try_into().unwrap()
     }
 
     fn next<'a>(
@@ -51,7 +54,7 @@ impl<S: AsRef<[u8]> + Send> Blobs for VecBlobs<S> {
         tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + 'a>>)>>,
     > {
         Box::pin(async move {
-            let Some(data) = self.data.get(self.index) else {
+            let Some(data) = self.data.as_ref().get(self.index) else {
                 return Ok(None);
             };
             self.index += 1;
