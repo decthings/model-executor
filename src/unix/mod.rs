@@ -154,7 +154,7 @@ exports.default = {}",
                             fn on_event<'a>(
                                 &'a self,
                                 event: rpc::types::EventMessage,
-                                additional_segments: impl rpc::AdditionalSegments + Send + 'a,
+                                blobs: Box<dyn rpc::Blobs + Send + 'a>,
                             ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
                             {
                                 Box::pin(async move {
@@ -164,7 +164,7 @@ exports.default = {}",
                                             error: None,
                                         }
                                     );
-                                    assert_eq!(additional_segments.amount(), 0);
+                                    assert_eq!(blobs.amount(), 0);
                                     let mut locked = self.did_initialize.lock().unwrap();
                                     assert!(!*locked);
                                     *locked = true;

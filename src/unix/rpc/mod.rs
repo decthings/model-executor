@@ -1,11 +1,11 @@
-pub mod segments;
+pub mod blobs;
 pub mod types;
 
 use atomic_counter::AtomicCounter;
 use std::{collections::HashMap, future::Future, path::Path, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub use segments::AdditionalSegments;
+pub use blobs::Blobs;
 
 pub const MESSAGE_BYTE: u8 = 0;
 pub const DATA_BYTE: u8 = 1;
@@ -16,7 +16,7 @@ pub trait ChildEventCallbacks {
     fn on_event<'a>(
         &'a self,
         event: types::EventMessage,
-        additional_segments: impl AdditionalSegments + Send + 'a,
+        blobs: Box<dyn Blobs + Send + 'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     #[must_use]
@@ -36,10 +36,7 @@ pub enum CallMethodOnChildError {
 type ResponseCallback = Box<
     dyn for<'b> FnOnce(
             String,
-            Result<
-                (serde_json::Value, Box<dyn AdditionalSegments + Send + 'b>),
-                CallMethodOnChildError,
-            >,
+            Result<(serde_json::Value, Box<dyn Blobs + Send + 'b>), CallMethodOnChildError>,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
         + Send
         + 'static,
@@ -57,8 +54,8 @@ impl ChildRpcListener {
             let res = async {
                 let first_byte = self.unix_reader.read_u8().await?;
                 if first_byte == MESSAGE_BYTE {
-                    let num_additional_segments = self.unix_reader.read_u32().await?;
-                    let first_segment_length = self.unix_reader.read_u64().await? as usize;
+                    let num_blobs = self.unix_reader.read_u32().await?;
+                    let json_length = self.unix_reader.read_u64().await? as usize;
 
                     #[derive(serde::Deserialize)]
                     #[serde(untagged)]
@@ -67,22 +64,20 @@ impl ChildRpcListener {
                         Result(types::ResultMessage),
                     }
 
-                    let mut first_segment = vec![0; first_segment_length];
-                    self.unix_reader.read_exact(&mut first_segment).await?;
+                    let mut json = vec![0; json_length];
+                    self.unix_reader.read_exact(&mut json).await?;
 
                     {
-                        let mut additional_segments = segments::AdditionalSegmentsFromSocket::new(
-                            &mut self.unix_reader,
-                            num_additional_segments,
-                        );
+                        let mut blobs =
+                            blobs::BlobsFromSocket::new(&mut self.unix_reader, num_blobs);
 
-                        match serde_json::from_slice::<ResultOrEvent>(&first_segment).unwrap() {
+                        match serde_json::from_slice::<ResultOrEvent>(&json).unwrap() {
                             ResultOrEvent::Result(val) => {
                                 log::trace!(
                                     "Got response for method with id {} from spawned model #{}: {}",
                                     val.id,
                                     self.model_count,
-                                    String::from_utf8_lossy(&first_segment),
+                                    String::from_utf8_lossy(&json),
                                 );
 
                                 let resolve = {
@@ -91,11 +86,7 @@ impl ChildRpcListener {
                                 };
 
                                 if let Some(resolve) = resolve {
-                                    resolve(
-                                        val.id,
-                                        Ok((val.result, Box::new(&mut additional_segments))),
-                                    )
-                                    .await;
+                                    resolve(val.id, Ok((val.result, Box::new(&mut blobs)))).await;
                                 }
                             }
                             ResultOrEvent::Event(ev) => {
@@ -104,17 +95,15 @@ impl ChildRpcListener {
                                     self.model_count
                                 );
 
-                                on_event
-                                    .on_event(ev, Box::new(&mut additional_segments))
-                                    .await;
+                                on_event.on_event(ev, Box::new(&mut blobs)).await;
                             }
                         }
 
-                        if additional_segments.did_err() {
+                        if blobs.did_err() {
                             return Err(None);
                         }
 
-                        additional_segments.skip_all().await?;
+                        blobs.skip_all().await?;
                     }
 
                     // Read one extra byte to make the API compatible with host. This is the
@@ -284,13 +273,7 @@ impl ChildRpc {
         params: &types::EvaluateCommand,
         result_cb: impl for<'b> FnOnce(
                 String,
-                Result<
-                    (
-                        types::EvaluateResult,
-                        Box<dyn AdditionalSegments + Send + 'b>,
-                    ),
-                    CallMethodOnChildError,
-                >,
+                Result<(types::EvaluateResult, Box<dyn Blobs + Send + 'b>), CallMethodOnChildError>,
             ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
             + Send
             + 'static,
@@ -299,10 +282,10 @@ impl ChildRpc {
             types::CommandMessageWithResponse::CallEvaluate(params),
             Box::new(|id, res| {
                 Box::pin(async move {
-                    let res = res.and_then(|(res, additional_segments)| {
+                    let res = res.and_then(|(res, blobs)| {
                         serde_json::from_value(res)
                             .map_err(CallMethodOnChildError::Json)
-                            .map(|res| (res, additional_segments))
+                            .map(|res| (res, blobs))
                     });
                     result_cb(id, res).await;
                 })
@@ -394,19 +377,19 @@ impl ChildRpc {
     pub async fn provide_data(
         &self,
         request_id: u32,
-        mut additional_segments: impl AdditionalSegments,
+        mut blobs: impl Blobs,
     ) -> Result<(), tokio::io::Error> {
         log::trace!(
-            "Providing {} data segments for data request {request_id} to spawned model #{}",
-            additional_segments.amount(),
+            "Providing {} data blobs for data request {request_id} to spawned model #{}",
+            blobs.amount(),
             self.model_count,
         );
 
         let mut writer = self.unix_socket.lock().await;
         writer.write_u8(DATA_BYTE).await?;
         writer.write_u32(request_id).await?;
-        writer.write_u32(additional_segments.amount()).await?;
-        while let Some((size, mut reader)) = additional_segments.next().await? {
+        writer.write_u32(blobs.amount()).await?;
+        while let Some((size, mut reader)) = blobs.next().await? {
             writer.write_u64(size).await?;
             tokio::io::copy(&mut reader, &mut *writer).await?;
         }
