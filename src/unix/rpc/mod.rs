@@ -398,25 +398,27 @@ impl ChildRpc {
     }
 }
 
-pub(crate) async fn rpc(
+pub(crate) fn rpc(
     unixsocket_path: impl AsRef<Path>,
     model_count: usize,
-) -> (ChildRpc, ChildRpcListener) {
+) -> impl Future<Output = (ChildRpc, ChildRpcListener)> {
     let unix_socket = tokio::net::UnixListener::bind(unixsocket_path).unwrap();
-    let unix_stream = unix_socket.accept().await.unwrap().0;
-    let (reader, writer) = unix_stream.into_split();
-    let awaiting_responses = Arc::new(std::sync::Mutex::new(HashMap::new()));
-    (
-        ChildRpc {
-            model_count,
-            unix_socket: tokio::sync::Mutex::new(tokio::io::BufWriter::new(writer)),
-            id_counter: atomic_counter::ConsistentCounter::new(0),
-            awaiting_responses: Arc::clone(&awaiting_responses),
-        },
-        ChildRpcListener {
-            model_count,
-            unix_reader: reader,
-            awaiting_responses,
-        },
-    )
+    async move {
+        let unix_stream = unix_socket.accept().await.unwrap().0;
+        let (reader, writer) = unix_stream.into_split();
+        let awaiting_responses = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        (
+            ChildRpc {
+                model_count,
+                unix_socket: tokio::sync::Mutex::new(tokio::io::BufWriter::new(writer)),
+                id_counter: atomic_counter::ConsistentCounter::new(0),
+                awaiting_responses: Arc::clone(&awaiting_responses),
+            },
+            ChildRpcListener {
+                model_count,
+                unix_reader: reader,
+                awaiting_responses,
+            },
+        )
+    }
 }

@@ -209,8 +209,19 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromSocket<R> {
         Box::pin(async move {
             self.skip_until_index(index).await?;
 
-            let blobs = self.blobs.lock().await;
-            let size = u64::from_be_bytes(blobs[index].size);
+            let mut blobs = self.blobs.lock().await;
+
+            let blob = &mut blobs[index];
+            while blob.size_bytes_read < 8 {
+                blob.size_bytes_read += self
+                    .reader
+                    .read(&mut blob.size[blob.size_bytes_read..])
+                    .await?;
+            }
+            let size = u64::from_be_bytes(blob.size);
+            if blob.remaining.is_none() {
+                blob.remaining = Some(size);
+            }
 
             Ok(Some((
                 size,
