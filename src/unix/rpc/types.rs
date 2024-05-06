@@ -25,8 +25,9 @@ pub struct Param {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OtherModelState {
+pub struct OtherModelWithState {
     pub id: String,
+    pub mount_path: String,
     pub state: Vec<Param>,
 }
 
@@ -40,7 +41,7 @@ pub struct InitializeCommand {
 #[serde(rename_all = "camelCase")]
 pub struct CreateModelStateCommand {
     pub params: Vec<Param>,
-    pub other_model_states: Vec<OtherModelState>,
+    pub other_models: Vec<OtherModelWithState>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -61,9 +62,17 @@ pub struct CreateModelStateResult {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OtherModel {
+    pub id: String,
+    pub mount_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstantiateModelCommand {
     pub instantiated_model_id: String,
     pub state: Vec<Param>,
+    pub other_models: Vec<OtherModel>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
