@@ -9,6 +9,7 @@ use std::{
 
 use wasmtime::component::ResourceAny;
 
+#[derive(Debug)]
 pub enum CallFunctionError {
     Wasmtime(wasmtime::Error),
     Function(String),
