@@ -1,7 +1,11 @@
 mod bindings;
 pub use bindings::*;
 
-use std::{collections::HashMap, ops::DerefMut, sync::Mutex};
+use std::{
+    collections::HashMap,
+    ops::DerefMut,
+    sync::{Arc, Mutex},
+};
 
 use wasmtime::component::ResourceAny;
 
@@ -61,9 +65,10 @@ pub struct InstantiateModelOptions {
     pub other_models: Vec<OtherModel>,
 }
 
+#[derive(Clone)]
 pub struct RunningWasmModel {
-    store: Mutex<wasmtime::Store<Host>>,
-    bindings: ModelRunner,
+    store: Arc<Mutex<wasmtime::Store<Host>>>,
+    bindings: Arc<ModelRunner>,
 }
 
 impl RunningWasmModel {
@@ -161,7 +166,7 @@ impl RunningWasmModel {
 
         Ok(WasmInstantiated {
             instantiated,
-            model: self,
+            model: self.clone(),
         })
     }
 }
@@ -184,12 +189,12 @@ pub struct GetModelStateOptions {
     pub state_provider: Box<dyn HostStateProvider>,
 }
 
-pub struct WasmInstantiated<'a> {
+pub struct WasmInstantiated {
     instantiated: ResourceAny,
-    model: &'a RunningWasmModel,
+    model: RunningWasmModel,
 }
 
-impl WasmInstantiated<'_> {
+impl WasmInstantiated {
     pub fn call_evaluate(
         &self,
         options: EvaluateOptions,
@@ -300,7 +305,7 @@ pub fn run_wasm(
     let (bindings, _) = ModelRunner::instantiate(&mut store, &component, &linker).unwrap();
 
     Ok(RunningWasmModel {
-        store: Mutex::new(store),
-        bindings,
+        store: Arc::new(Mutex::new(store)),
+        bindings: Arc::new(bindings),
     })
 }
