@@ -7,10 +7,20 @@ use std::{
 };
 use tokio::io::AsyncReadExt;
 
+/// The Blobs trait (short for binary large object) is like a Vec<Vec<u8>>, but it is streamed
+/// (lazy loaded) for performance and memory consumption reasons.
+///
+/// The *next* method returns the byte length of the blob, and a tokio reader which should provide
+/// exactly the necessary amount of bytes, and then zero bytes (EOF).
+///
+/// If the caller is not interested in the blob, the tokio reader may be discarded before all bytes
+/// has been read. The implementation must make sure to properly handle this case.
 #[auto_impl::auto_impl(Box, &mut)]
 pub trait Blobs {
+    /// The total number of blobs.
     fn amount(&self) -> u32;
 
+    /// The total number of blobs minus the ones that were read.
     fn remaining(&self) -> u32;
 
     #[allow(clippy::type_complexity)]
@@ -22,6 +32,7 @@ pub trait Blobs {
     >;
 }
 
+/// An implementation of Blobs which uses a list of bytes as the source.
 pub struct ListBlobs<L: AsRef<[S]> + Send, S: AsRef<[u8]> + Send> {
     phantom: PhantomData<S>,
     data: L,
@@ -73,7 +84,7 @@ struct Blob {
 }
 
 #[pin_project::pin_project]
-struct BlobFromSocketReader<'a, R: tokio::io::AsyncRead + Unpin> {
+struct InnerBlobFromReader<'a, R: tokio::io::AsyncRead + Unpin> {
     #[pin]
     reader: R,
     index: usize,
@@ -81,7 +92,7 @@ struct BlobFromSocketReader<'a, R: tokio::io::AsyncRead + Unpin> {
     did_err: Arc<std::sync::Mutex<bool>>,
 }
 
-impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for BlobFromSocketReader<'_, R> {
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for InnerBlobFromReader<'_, R> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -115,7 +126,17 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for BlobFromSocketRea
     }
 }
 
-pub struct BlobsFromSocket<R: tokio::io::AsyncRead + Send + Unpin> {
+/// An implementation of Blobs which uses a reader as the source.
+///
+/// Each blob will be read sequentially from the reader. Additionally, before each blob a u64 will
+/// be read, which will be interpreted as the length of the following blob.
+///
+/// For example, if *amount* is 2 and the reader gives the following bytes:
+///
+/// `[0, 0, 0, 0, 0, 0, 0, 2, 1, 2, 0, 0, 0, 0, 0, 0, 0, 3, 3, 4, 5]`
+///
+/// Then the blobs will be `[1, 2]` and `[3, 4, 5]`.
+pub struct BlobsFromReader<R: tokio::io::AsyncRead + Send + Unpin> {
     amount: u32,
     reader: R,
     index: Arc<std::sync::Mutex<usize>>,
@@ -123,7 +144,7 @@ pub struct BlobsFromSocket<R: tokio::io::AsyncRead + Send + Unpin> {
     did_err: Arc<std::sync::Mutex<bool>>,
 }
 
-impl<R: tokio::io::AsyncRead + Send + Unpin> BlobsFromSocket<R> {
+impl<R: tokio::io::AsyncRead + Send + Unpin> BlobsFromReader<R> {
     pub fn new(reader: R, amount: u32) -> Self {
         Self {
             amount,
@@ -162,7 +183,7 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> BlobsFromSocket<R> {
             if blob.remaining.is_none() {
                 blob.remaining = Some(size);
             }
-            let mut reader = BlobFromSocketReader {
+            let mut reader = InnerBlobFromReader {
                 reader: &mut self.reader,
                 blobs,
                 index: i,
@@ -180,7 +201,7 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> BlobsFromSocket<R> {
     }
 }
 
-impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromSocket<R> {
+impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromReader<R> {
     fn amount(&self) -> u32 {
         self.amount
     }
@@ -225,7 +246,7 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromSocket<R> {
 
             Ok(Some((
                 size,
-                Box::pin(BlobFromSocketReader {
+                Box::pin(InnerBlobFromReader {
                     reader: &mut self.reader,
                     blobs,
                     index,

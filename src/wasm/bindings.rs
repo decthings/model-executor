@@ -1,32 +1,12 @@
 use wasmtime::component::{Resource, ResourceTable};
 
-pub trait HostDataLoader: Send + 'static {
-    fn id(&self) -> u32;
-    fn read(&mut self, start_index: u32, amount: u32) -> Vec<Vec<u8>>;
-    fn shuffle(&mut self, others: &[u32]);
-}
+pub type HostDataLoaderDyn = Box<dyn super::DataLoader>;
 
-pub type HostDataLoaderDyn = Box<dyn HostDataLoader>;
+pub type HostStateProviderDyn = Box<dyn super::StateProvider>;
 
-pub trait HostStateProvider: Send + 'static {
-    fn provide(&self, data: Vec<(String, Vec<u8>)>);
-}
+pub type HostStateLoaderDyn = Box<dyn super::StateLoader>;
 
-pub type HostStateProviderDyn = Box<dyn HostStateProvider>;
-
-pub trait HostStateLoader: Send + 'static {
-    fn read(&self) -> Vec<u8>;
-}
-
-pub type HostStateLoaderDyn = Box<dyn HostStateLoader>;
-
-pub trait HostTrainTracker: Send + 'static {
-    fn progress(&self, progress: f32);
-    fn metrics(&self, metrics: Vec<(String, Vec<u8>)>);
-    fn is_cancelled(&self) -> bool;
-}
-
-pub type HostTrainTrackerDyn = Box<dyn HostTrainTracker>;
+pub type HostTrainTrackerDyn = Box<dyn super::TrainTracker>;
 
 wasmtime::component::bindgen!({
     with: {

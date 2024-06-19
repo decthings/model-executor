@@ -1,5 +1,4 @@
 mod bindings;
-pub use bindings::*;
 
 use std::{
     collections::HashMap,
@@ -8,6 +7,26 @@ use std::{
 };
 
 use wasmtime::component::ResourceAny;
+
+pub trait DataLoader: Send + 'static {
+    fn id(&self) -> u32;
+    fn read(&mut self, start_index: u32, amount: u32) -> Vec<Vec<u8>>;
+    fn shuffle(&mut self, others: &[u32]);
+}
+
+pub trait StateProvider: Send + 'static {
+    fn provide(&self, data: Vec<(String, Vec<u8>)>);
+}
+
+pub trait StateLoader: Send + 'static {
+    fn read(&self) -> Vec<u8>;
+}
+
+pub trait TrainTracker: Send + 'static {
+    fn progress(&self, progress: f32);
+    fn metrics(&self, metrics: Vec<(String, Vec<u8>)>);
+    fn is_cancelled(&self) -> bool;
+}
 
 #[derive(Debug)]
 pub enum CallFunctionError {
@@ -36,12 +55,12 @@ impl From<String> for CallFunctionError {
 pub struct Param {
     pub amount: u32,
     pub total_byte_size: u64,
-    pub data_loader: Box<dyn HostDataLoader>,
+    pub data_loader: Box<dyn DataLoader>,
 }
 
 pub struct StateKey {
     pub byte_size: u64,
-    pub state_loader: Box<dyn HostStateLoader>,
+    pub state_loader: Box<dyn StateLoader>,
 }
 
 pub struct OtherModelWithState {
@@ -52,7 +71,7 @@ pub struct OtherModelWithState {
 
 pub struct CreateModelStateOptions {
     pub params: HashMap<String, Param>,
-    pub state_provider: Box<dyn HostStateProvider>,
+    pub state_provider: Box<dyn StateProvider>,
     pub other_models: Vec<OtherModelWithState>,
 }
 
@@ -68,27 +87,58 @@ pub struct InstantiateModelOptions {
 
 #[derive(Clone)]
 pub struct RunningWasmModel {
-    store: Arc<Mutex<wasmtime::Store<Host>>>,
-    bindings: Arc<ModelRunner>,
+    store: Arc<Mutex<wasmtime::Store<bindings::Host>>>,
+    bindings: Arc<bindings::ModelRunner>,
 }
 
 impl RunningWasmModel {
-    pub fn store(&self) -> impl DerefMut<Target = wasmtime::Store<Host>> + '_ {
+    pub fn run(
+        wasi: wasmtime_wasi::WasiCtx,
+        engine: &wasmtime::Engine,
+        component: &wasmtime::component::Component,
+    ) -> wasmtime::Result<Self> {
+        let mut store = wasmtime::Store::new(
+            engine,
+            bindings::Host {
+                table: wasmtime::component::ResourceTable::new(),
+                wasi,
+            },
+        );
+
+        let mut linker = wasmtime::component::Linker::new(store.engine());
+        bindings::ModelRunner::add_to_linker(&mut linker, |state| state).unwrap();
+        wasmtime_wasi::add_to_linker_sync(&mut linker).unwrap();
+
+        let (bindings, _) =
+            bindings::ModelRunner::instantiate(&mut store, &component, &linker).unwrap();
+
+        Ok(Self {
+            store: Arc::new(Mutex::new(store)),
+            bindings: Arc::new(bindings),
+        })
+    }
+
+    pub fn store(&self) -> impl DerefMut<Target = wasmtime::Store<bindings::Host>> + '_ {
         self.store.lock().unwrap()
     }
 
-    pub fn call_create_model_state(
+    /// Call the *create_model_state* function on the running model.
+    ///
+    /// The function takes a list of parameters and outputs a new model state. A model state is
+    /// some arbitrary binary data which contains the trained model. For a neural network, the
+    /// state would contain the weights and biases of the neurons.
+    pub fn create_model_state(
         &self,
         options: CreateModelStateOptions,
     ) -> Result<(), CallFunctionError> {
         let mut store = self.store.lock().unwrap();
 
-        let options = exports::decthings::model::model::CreateModelStateOptions {
+        let options = bindings::exports::decthings::model::model::CreateModelStateOptions {
             params: options
                 .params
                 .into_iter()
                 .map(|(name, param)| {
-                    Ok(exports::decthings::model::model::Param {
+                    Ok(bindings::exports::decthings::model::model::Param {
                         name,
                         amount: param.amount,
                         total_byte_size: param.total_byte_size,
@@ -101,24 +151,26 @@ impl RunningWasmModel {
                 .other_models
                 .into_iter()
                 .map(|other_model| {
-                    Ok(exports::decthings::model::model::OtherModelWithState {
-                        model_id: other_model.model_id,
-                        mount_path: other_model.mount_path,
-                        state: other_model
-                            .state
-                            .into_iter()
-                            .map(|(key, state)| {
-                                Ok(exports::decthings::model::model::StateKey {
-                                    key,
-                                    byte_size: state.byte_size,
-                                    state_loader: store
-                                        .data_mut()
-                                        .table
-                                        .push(state.state_loader)?,
+                    Ok(
+                        bindings::exports::decthings::model::model::OtherModelWithState {
+                            model_id: other_model.model_id,
+                            mount_path: other_model.mount_path,
+                            state: other_model
+                                .state
+                                .into_iter()
+                                .map(|(key, state)| {
+                                    Ok(bindings::exports::decthings::model::model::StateKey {
+                                        key,
+                                        byte_size: state.byte_size,
+                                        state_loader: store
+                                            .data_mut()
+                                            .table
+                                            .push(state.state_loader)?,
+                                    })
                                 })
-                            })
-                            .collect::<wasmtime::Result<_>>()?,
-                    })
+                                .collect::<wasmtime::Result<_>>()?,
+                        },
+                    )
                 })
                 .collect::<wasmtime::Result<_>>()?,
         };
@@ -130,18 +182,25 @@ impl RunningWasmModel {
         Ok(())
     }
 
-    pub fn call_instantiate_model(
+    /// Call the *instantiate_model* function on the running model.
+    ///
+    /// The function loads a previously created or trained state and prepares it for execution. The
+    /// returned struct then allows you to call the functions evaluate and train.
+    ///
+    /// After you are done with the instantiate model, make sure to call *dispose*. Simply dropping
+    /// it is not enough to free up all resources.
+    pub fn instantiate_model(
         &self,
         options: InstantiateModelOptions,
     ) -> Result<WasmInstantiated, CallFunctionError> {
         let mut store = self.store.lock().unwrap();
 
-        let options = exports::decthings::model::model::InstantiateModelOptions {
+        let options = bindings::exports::decthings::model::model::InstantiateModelOptions {
             state: options
                 .state
                 .into_iter()
                 .map(|(key, state)| {
-                    Ok(exports::decthings::model::model::StateKey {
+                    Ok(bindings::exports::decthings::model::model::StateKey {
                         key,
                         byte_size: state.byte_size,
                         state_loader: store.data_mut().table.push(state.state_loader)?,
@@ -152,7 +211,7 @@ impl RunningWasmModel {
                 .other_models
                 .into_iter()
                 .map(|other_model| {
-                    Ok(exports::decthings::model::model::OtherModel {
+                    Ok(bindings::exports::decthings::model::model::OtherModel {
                         model_id: other_model.model_id,
                         mount_path: other_model.mount_path,
                     })
@@ -183,11 +242,11 @@ pub struct EvaluateOutput {
 
 pub struct TrainOptions {
     pub params: HashMap<String, Param>,
-    pub tracker: Box<dyn HostTrainTracker>,
+    pub tracker: Box<dyn TrainTracker>,
 }
 
 pub struct GetModelStateOptions {
-    pub state_provider: Box<dyn HostStateProvider>,
+    pub state_provider: Box<dyn StateProvider>,
 }
 
 pub struct WasmInstantiated {
@@ -196,18 +255,21 @@ pub struct WasmInstantiated {
 }
 
 impl WasmInstantiated {
-    pub fn call_evaluate(
+    /// Call the *evaluate* function on the running model.
+    ///
+    /// The function takes a set of input parameters and outputs some data.
+    pub fn evaluate(
         &self,
         options: EvaluateOptions,
     ) -> Result<Vec<EvaluateOutput>, CallFunctionError> {
         let mut store = self.model.store.lock().unwrap();
 
-        let options = exports::decthings::model::model::EvaluateOptions {
+        let options = bindings::exports::decthings::model::model::EvaluateOptions {
             params: options
                 .params
                 .into_iter()
                 .map(|(name, param)| {
-                    Ok(exports::decthings::model::model::Param {
+                    Ok(bindings::exports::decthings::model::model::Param {
                         name,
                         amount: param.amount,
                         total_byte_size: param.total_byte_size,
@@ -233,15 +295,24 @@ impl WasmInstantiated {
             .collect())
     }
 
-    pub fn call_train(&self, options: TrainOptions) -> Result<(), CallFunctionError> {
+    /// Call the *train* function on the running model.
+    ///
+    /// The function takes a set of parameters and trains the model. The *tracker* option is used
+    /// to listen for events, such as progress and metrics.
+    ///
+    /// After training, the *evaluate* function will use the new state. To save the trained model,
+    /// call the *get_model_state* function, which will output a binary state. The returned state
+    /// can then be loaded again using *instantiate_model*, which allows you to use the trained
+    /// state after the model is restarted.
+    pub fn train(&self, options: TrainOptions) -> Result<(), CallFunctionError> {
         let mut store = self.model.store.lock().unwrap();
 
-        let options = exports::decthings::model::model::TrainOptions {
+        let options = bindings::exports::decthings::model::model::TrainOptions {
             params: options
                 .params
                 .into_iter()
                 .map(|(name, param)| {
-                    Ok(exports::decthings::model::model::Param {
+                    Ok(bindings::exports::decthings::model::model::Param {
                         name,
                         amount: param.amount,
                         total_byte_size: param.total_byte_size,
@@ -261,13 +332,14 @@ impl WasmInstantiated {
         Ok(())
     }
 
-    pub fn call_get_model_state(
-        &self,
-        options: GetModelStateOptions,
-    ) -> Result<(), CallFunctionError> {
+    /// Call the *get_model_state* function on the running model.
+    ///
+    /// The function outputs the model state. If the *train* function was called on this
+    /// instantiated model, the function will output the new, trained state.
+    pub fn get_model_state(&self, options: GetModelStateOptions) -> Result<(), CallFunctionError> {
         let mut store = self.model.store.lock().unwrap();
 
-        let options = exports::decthings::model::model::GetModelStateOptions {
+        let options = bindings::exports::decthings::model::model::GetModelStateOptions {
             state_provider: store.data_mut().table.push(options.state_provider)?,
         };
 
@@ -280,33 +352,13 @@ impl WasmInstantiated {
         Ok(())
     }
 
+    /// Dispose the instantiated model.
+    ///
+    /// The function will deallocate any resources used by the instantiated model. To avoid a
+    /// memory leak, this function must be called when you are done with the instantiated model.
+    /// Simply dropping the instantiated model struct will not free up all resources.
     pub fn dispose(self) -> wasmtime::Result<()> {
         let mut store = self.model.store.lock().unwrap();
         self.instantiated.resource_drop(&mut *store)
     }
-}
-
-pub fn run_wasm(
-    wasi: wasmtime_wasi::WasiCtx,
-    engine: &wasmtime::Engine,
-    component: &wasmtime::component::Component,
-) -> wasmtime::Result<RunningWasmModel> {
-    let mut store = wasmtime::Store::new(
-        engine,
-        Host {
-            table: wasmtime::component::ResourceTable::new(),
-            wasi,
-        },
-    );
-
-    let mut linker = wasmtime::component::Linker::new(store.engine());
-    ModelRunner::add_to_linker(&mut linker, |state| state).unwrap();
-    wasmtime_wasi::add_to_linker_sync(&mut linker).unwrap();
-
-    let (bindings, _) = ModelRunner::instantiate(&mut store, &component, &linker).unwrap();
-
-    Ok(RunningWasmModel {
-        store: Arc::new(Mutex::new(store)),
-        bindings: Arc::new(bindings),
-    })
 }

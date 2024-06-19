@@ -1,11 +1,10 @@
-pub mod blobs;
 pub mod types;
 
 use atomic_counter::AtomicCounter;
 use std::{collections::HashMap, future::Future, path::Path, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub use blobs::Blobs;
+use crate::unix::Blobs;
 
 pub const MESSAGE_BYTE: u8 = 0;
 pub const DATA_BYTE: u8 = 1;
@@ -68,8 +67,10 @@ impl ChildRpcListener {
                     self.unix_reader.read_exact(&mut json).await?;
 
                     {
-                        let mut blobs =
-                            blobs::BlobsFromSocket::new(&mut self.unix_reader, num_blobs);
+                        let mut blobs = crate::unix::blobs::BlobsFromReader::new(
+                            &mut self.unix_reader,
+                            num_blobs,
+                        );
 
                         match serde_json::from_slice::<ResultOrEvent>(&json).unwrap() {
                             ResultOrEvent::Result(val) => {
