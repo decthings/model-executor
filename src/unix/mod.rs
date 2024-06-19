@@ -18,11 +18,13 @@ impl ModelExecutor {
     async fn inner_run(
         &self,
         to_execute: spawn::ModelToExecute<'_, impl AsRef<str>>,
+        current_dir: impl AsRef<Path>,
         inherit_env: bool,
         with_command: Option<impl FnOnce(&mut tokio::process::Command)>,
         initialize_path: Option<String>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
         let (mut cmd, rpc_fut) = self.run(to_execute);
+        cmd.current_dir(current_dir);
         if inherit_env {
             for (key, val) in std::env::vars() {
                 if key == "IPC_PATH" {
@@ -38,6 +40,9 @@ impl ModelExecutor {
         let mut child = cmd.spawn().map_err(RunError::Std)?;
 
         let (rpc, listener) = rpc_fut.await;
+
+        log::trace!("Model connected over Unix socket");
+
         let rpc = Arc::new(rpc);
         let rpc_clone = Arc::clone(&rpc);
 
@@ -50,16 +55,19 @@ impl ModelExecutor {
         let training_sessions_clone = Arc::clone(&training_sessions);
 
         tokio::spawn(async move {
-            listener.listen(events::EventCallbacks {
-                rpc,
-                on_initialized: Mutex::new(Some(initialized_tx)),
-                datasets,
-                state_providers,
-                training_sessions,
-            })
+            listener
+                .listen(events::EventCallbacks {
+                    rpc,
+                    on_initialized: Mutex::new(Some(initialized_tx)),
+                    datasets,
+                    state_providers,
+                    training_sessions,
+                })
+                .await;
         });
 
         if let Some(initialize_path) = initialize_path {
+            log::trace!("Calling initialize on model, with path = {initialize_path}");
             if let Err(e) = rpc_clone
                 .call_initialize(&spawn::rpc::types::InitializeCommand {
                     path: initialize_path,
@@ -71,12 +79,16 @@ impl ModelExecutor {
             }
         }
 
+        log::trace!("Waiting for model initialization to complete");
         if let Err(spawn::rpc::types::ModelSessionInitializedError::Exception { details }) =
             initialized_rx.await.unwrap()
         {
+            log::trace!("Model initialization completed with error: Exception");
             child.kill().await.ok();
             return Err(RunError::Exception { details });
         }
+
+        log::trace!("Model initialization completed");
 
         Ok((
             child,
@@ -106,11 +118,18 @@ impl ModelExecutor {
         options: &RunBinOptions<'a>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
         let model_file = model_dir.join("model");
+
+        log::trace!(
+            "Executing model using binary executable at {}",
+            model_file.display()
+        );
+
         let to_execute: spawn::ModelToExecute<String> = spawn::ModelToExecute::Bin {
             path: model_file.to_str().unwrap(),
         };
         self.inner_run(
             to_execute,
+            model_dir,
             options.inherit_env,
             options.with_command.as_ref(),
             None,
@@ -130,13 +149,16 @@ impl ModelExecutor {
         model_dir: &Path,
         options: &RunNodeJsOptions<'a>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
+        let index_js = model_dir.join("index.js").to_str().unwrap().to_owned();
+        log::trace!("Executing model using Node.js at {index_js}");
         self.inner_run(
             spawn::ModelToExecute::NodeJs {
                 flags: &options.flags,
             },
+            model_dir,
             options.inherit_env,
             options.with_command.as_ref(),
-            Some(model_dir.join("index.js").to_str().unwrap().to_owned()),
+            Some(index_js),
         )
         .await
     }
@@ -153,13 +175,16 @@ impl ModelExecutor {
         model_dir: &Path,
         options: &RunPythonOptions<'a>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
+        let main_py = model_dir.join("main.py").to_str().unwrap().to_owned();
+        log::trace!("Executing model using Python at {main_py}");
         self.inner_run(
             spawn::ModelToExecute::Python {
                 flags: &options.flags,
             },
+            model_dir,
             options.inherit_env,
             options.with_command.as_ref(),
-            Some(model_dir.join("main.py").to_str().unwrap().to_owned()),
+            Some(main_py),
         )
         .await
     }
@@ -181,6 +206,7 @@ impl RunningUnixModel {
     fn add_dataset(
         &self,
         datasets: &mut HashMap<String, Arc<Box<dyn DataLoader>>>,
+        name: String,
         param: Param,
     ) -> spawn::rpc::types::Param {
         let dataset = self.dataset_counter.inc().to_string();
@@ -188,7 +214,7 @@ impl RunningUnixModel {
         datasets.insert(dataset.clone(), Arc::new(param.data_loader));
 
         spawn::rpc::types::Param {
-            name: param.name,
+            name,
             dataset,
             amount: param.amount,
             total_byte_size: param.total_byte_size,
@@ -203,13 +229,13 @@ impl RunningUnixModel {
     pub async fn create_model_state(
         &self,
         options: CreateModelStateOptions,
-    ) -> Result<(), types::CreateModelStateError> {
+    ) -> Result<(), types::CallFunctionError> {
         let (child_params, child_other_models) = {
             let mut datasets = self.datasets.lock().await;
             let child_params = options
                 .params
                 .into_iter()
-                .map(|param| self.add_dataset(&mut *datasets, param))
+                .map(|(name, param)| self.add_dataset(&mut *datasets, name, param))
                 .collect();
             let child_other_models = options
                 .other_models
@@ -224,13 +250,13 @@ impl RunningUnixModel {
                             .map(|(key, state)| {
                                 self.add_dataset(
                                     &mut *datasets,
+                                    key,
                                     Param {
-                                        name: key,
                                         amount: 1,
                                         total_byte_size: state.byte_size,
                                         data_loader: Box::new(state_loader::DataLoaderFromState {
                                             byte_size: state.byte_size,
-                                            inner: state.loader,
+                                            inner: state.state_loader,
                                         }),
                                     },
                                 )
@@ -276,8 +302,8 @@ impl RunningUnixModel {
             Ok(spawn::rpc::types::CreateModelStateResult { error: None }) => Ok(()),
             Ok(spawn::rpc::types::CreateModelStateResult {
                 error: Some(spawn::rpc::types::CreateModelStateError::Exception { details }),
-            }) => Err(types::CreateModelStateError::Exception { details }),
-            Err(e) => Err(types::CreateModelStateError::Rpc(e)),
+            }) => Err(types::CallFunctionError::Exception { details }),
+            Err(e) => Err(types::CallFunctionError::Rpc(e)),
         }
     }
 
@@ -291,7 +317,7 @@ impl RunningUnixModel {
     pub async fn instantiate_model(
         &self,
         options: InstantiateModelOptions,
-    ) -> Result<UnixInstantiated, types::InstantiateModelError> {
+    ) -> Result<UnixInstantiated, types::CallFunctionError> {
         let child_params = {
             let mut datasets = self.datasets.lock().await;
             options
@@ -300,13 +326,13 @@ impl RunningUnixModel {
                 .map(|(key, state)| {
                     self.add_dataset(
                         &mut *datasets,
+                        key,
                         Param {
-                            name: key,
                             amount: 1,
                             total_byte_size: state.byte_size,
                             data_loader: Box::new(state_loader::DataLoaderFromState {
                                 byte_size: state.byte_size,
-                                inner: state.loader,
+                                inner: state.state_loader,
                             }),
                         },
                     )
@@ -347,11 +373,11 @@ impl RunningUnixModel {
             }),
             Ok(spawn::rpc::types::InstantiateModelResult {
                 error: Some(spawn::rpc::types::InstantiateModelError::Exception { details }),
-            }) => Err(types::InstantiateModelError::Exception { details }),
+            }) => Err(types::CallFunctionError::Exception { details }),
             Ok(spawn::rpc::types::InstantiateModelResult {
                 error: Some(spawn::rpc::types::InstantiateModelError::Disposed),
             }) => unreachable!(),
-            Err(e) => Err(types::InstantiateModelError::Rpc(e)),
+            Err(e) => Err(types::CallFunctionError::Rpc(e)),
         }
     }
 }
@@ -374,7 +400,7 @@ impl UnixInstantiated {
                             Vec<spawn::rpc::types::EvaluateOutput>,
                             Box<dyn Blobs + Send + 'b>,
                         ),
-                        types::EvaluateError,
+                        types::CallFunctionError,
                     >,
                 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
                 + Send
@@ -386,7 +412,7 @@ impl UnixInstantiated {
             options
                 .params
                 .into_iter()
-                .map(|param| self.model.add_dataset(&mut *datasets, param))
+                .map(|(name, param)| self.model.add_dataset(&mut *datasets, name, param))
                 .collect()
         };
 
@@ -412,7 +438,7 @@ impl UnixInstantiated {
                             error: Some(spawn::rpc::types::EvaluateError::Exception { details }),
                         },
                         _,
-                    )) => Err(types::EvaluateError::Exception { details }),
+                    )) => Err(types::CallFunctionError::Exception { details }),
                     Ok((
                         spawn::rpc::types::EvaluateResult {
                             outputs: _,
@@ -431,7 +457,7 @@ impl UnixInstantiated {
                     )) => {
                         unreachable!()
                     }
-                    Err(e) => Err(types::EvaluateError::Rpc(e)),
+                    Err(e) => Err(types::CallFunctionError::Rpc(e)),
                 };
                 (options.result_cb)(res2).await;
                 res_tx.send(()).ok();
@@ -458,12 +484,12 @@ impl UnixInstantiated {
     /// call the *get_model_state* function, which will output a binary state. The returned state
     /// can then be loaded again using *instantiate_model*, which allows you to use the trained
     /// state after the model is restarted.
-    pub async fn train(&self, options: TrainOptions) -> Result<(), types::TrainError> {
+    pub async fn train(&self, options: TrainOptions) -> Result<(), types::CallFunctionError> {
         let mut datasets = self.model.datasets.lock().await;
         let child_params = options
             .params
             .into_iter()
-            .map(|param| self.model.add_dataset(&mut *datasets, param))
+            .map(|(name, param)| self.model.add_dataset(&mut *datasets, name, param))
             .collect();
         drop(datasets);
 
@@ -498,13 +524,13 @@ impl UnixInstantiated {
             Ok(spawn::rpc::types::TrainResult { error: None }) => Ok(()),
             Ok(spawn::rpc::types::TrainResult {
                 error: Some(spawn::rpc::types::TrainError::Exception { details }),
-            }) => Err(types::TrainError::Exception { details }),
+            }) => Err(types::CallFunctionError::Exception { details }),
             Ok(spawn::rpc::types::TrainResult {
                 error: Some(spawn::rpc::types::TrainError::InstantiatedModelNotFound),
             }) => {
                 unreachable!()
             }
-            Err(e) => Err(types::TrainError::Rpc(e)),
+            Err(e) => Err(types::CallFunctionError::Rpc(e)),
         }
     }
 
@@ -515,7 +541,7 @@ impl UnixInstantiated {
     pub async fn get_model_state(
         &self,
         options: GetModelStateOptions,
-    ) -> Result<(), types::GetModelStateError> {
+    ) -> Result<(), types::CallFunctionError> {
         let cmd = spawn::rpc::types::GetModelStateCommand {
             instantiated_model_id: self.instantiated_model_id.clone(),
         };
@@ -533,13 +559,13 @@ impl UnixInstantiated {
             Ok(spawn::rpc::types::GetModelStateResult { error: None }) => Ok(()),
             Ok(spawn::rpc::types::GetModelStateResult {
                 error: Some(spawn::rpc::types::GetModelStateError::Exception { details }),
-            }) => Err(types::GetModelStateError::Exception { details }),
+            }) => Err(types::CallFunctionError::Exception { details }),
             Ok(spawn::rpc::types::GetModelStateResult {
                 error: Some(spawn::rpc::types::GetModelStateError::InstantiatedModelNotFound),
             }) => {
                 unreachable!()
             }
-            Err(e) => Err(types::GetModelStateError::Rpc(e)),
+            Err(e) => Err(types::CallFunctionError::Rpc(e)),
         }
     }
 

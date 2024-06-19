@@ -4,7 +4,7 @@ use tokio::io::AsyncRead;
 
 pub struct RunBinOptions<'a> {
     pub(crate) inherit_env: bool,
-    pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + 'a>>,
+    pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + Send + Sync + 'a>>,
 }
 
 impl<'a> Default for RunBinOptions<'a> {
@@ -22,7 +22,10 @@ impl<'a> RunBinOptions<'a> {
         self
     }
 
-    pub fn with_command(&mut self, cb: impl Fn(&mut tokio::process::Command) + 'a) -> &mut Self {
+    pub fn with_command(
+        &mut self,
+        cb: impl Fn(&mut tokio::process::Command) + Send + Sync + 'a,
+    ) -> &mut Self {
         self.with_command = Some(Box::new(cb));
         self
     }
@@ -31,7 +34,7 @@ impl<'a> RunBinOptions<'a> {
 pub struct RunNodeJsOptions<'a> {
     pub(crate) flags: Vec<&'a str>,
     pub(crate) inherit_env: bool,
-    pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + 'a>>,
+    pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + Send + Sync + 'a>>,
 }
 
 impl<'a> Default for RunNodeJsOptions<'a> {
@@ -55,7 +58,10 @@ impl<'a> RunNodeJsOptions<'a> {
         self
     }
 
-    pub fn with_command(&mut self, cb: impl Fn(&mut tokio::process::Command) + 'a) -> &mut Self {
+    pub fn with_command(
+        &mut self,
+        cb: impl Fn(&mut tokio::process::Command) + Send + Sync + 'a,
+    ) -> &mut Self {
         self.with_command = Some(Box::new(cb));
         self
     }
@@ -64,7 +70,7 @@ impl<'a> RunNodeJsOptions<'a> {
 pub struct RunPythonOptions<'a> {
     pub(crate) flags: Vec<&'a str>,
     pub(crate) inherit_env: bool,
-    pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + 'a>>,
+    pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + Send + Sync + 'a>>,
 }
 
 impl<'a> Default for RunPythonOptions<'a> {
@@ -88,12 +94,16 @@ impl<'a> RunPythonOptions<'a> {
         self
     }
 
-    pub fn with_command(&mut self, cb: impl Fn(&mut tokio::process::Command) + 'a) -> &mut Self {
+    pub fn with_command(
+        &mut self,
+        cb: impl Fn(&mut tokio::process::Command) + Send + Sync + 'a,
+    ) -> &mut Self {
         self.with_command = Some(Box::new(cb));
         self
     }
 }
 
+#[derive(Debug)]
 pub enum RunError {
     Std(std::io::Error),
     Exception { details: Option<String> },
@@ -110,11 +120,11 @@ pub trait DataLoader: Send + Sync {
 }
 
 pub trait StateProvider: Send + Sync {
-    fn provide(
-        &self,
+    fn provide<'a>(
+        &'a self,
         names: Vec<String>,
-        blobs: Box<dyn super::Blobs + Send + '_>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+        blobs: Box<dyn super::Blobs + Send + 'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 pub trait StateLoader: Send + Sync {
@@ -134,41 +144,21 @@ impl<T: AsRef<[u8]> + Send + Sync> StateLoader for T {
 pub trait TrainTracker: Send + Sync {
     fn progress(&self, progress: f32) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
-    fn metrics(
-        &self,
+    fn metrics<'a>(
+        &'a self,
         names: Vec<String>,
-        blobs: Box<dyn super::Blobs + Send + '_>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+        blobs: Box<dyn super::Blobs + Send + 'a>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
-pub enum CreateModelStateError {
-    Exception { details: Option<String> },
-    Rpc(super::spawn::rpc::CallMethodOnChildError),
-}
-
-pub enum InstantiateModelError {
-    Exception { details: Option<String> },
-    Rpc(super::spawn::rpc::CallMethodOnChildError),
-}
-
-pub enum EvaluateError {
-    Exception { details: Option<String> },
-    Rpc(super::spawn::rpc::CallMethodOnChildError),
-}
-
-pub enum TrainError {
-    Exception { details: Option<String> },
-    Rpc(super::spawn::rpc::CallMethodOnChildError),
-}
-
-pub enum GetModelStateError {
+#[derive(Debug)]
+pub enum CallFunctionError {
     Exception { details: Option<String> },
     Rpc(super::spawn::rpc::CallMethodOnChildError),
 }
 
 /// A parameter to be passed to a model function. The data is lazy-loaded using the data loader.
 pub struct Param {
-    pub name: String,
     pub amount: u32,
     pub total_byte_size: u64,
     pub data_loader: Box<dyn DataLoader>,
@@ -176,7 +166,7 @@ pub struct Param {
 
 pub struct StateKey {
     pub byte_size: u64,
-    pub loader: Box<dyn StateLoader>,
+    pub state_loader: Box<dyn StateLoader>,
 }
 
 pub struct OtherModelWithState {
@@ -189,7 +179,7 @@ pub struct OtherModel {
 }
 
 pub struct CreateModelStateOptions {
-    pub params: Vec<Param>,
+    pub params: HashMap<String, Param>,
     pub state_provider: Box<dyn StateProvider>,
     pub other_models: HashMap<String, OtherModelWithState>,
 }
@@ -206,18 +196,18 @@ pub struct EvaluateOptions<
                     Vec<super::spawn::rpc::types::EvaluateOutput>,
                     Box<dyn super::Blobs + Send + 'b>,
                 ),
-                EvaluateError,
+                CallFunctionError,
             >,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
         + Send
         + 'static,
 > {
-    pub params: Vec<Param>,
+    pub params: HashMap<String, Param>,
     pub result_cb: F,
 }
 
 pub struct TrainOptions {
-    pub params: Vec<Param>,
+    pub params: HashMap<String, Param>,
     pub tracker: Box<dyn TrainTracker>,
 }
 
