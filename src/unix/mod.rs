@@ -104,6 +104,32 @@ impl ModelExecutor {
         ))
     }
 
+    /// Execute a Decthings model using a custom commmand. The *program* argument should contain
+    /// the name of the command to execute, without any arguments. To pass arguments and environment
+    /// variables, or to change the current directory of the child, use the *options* parameter.
+    ///
+    /// Returns a tokio child which can be used to wait for or kill the child, and a
+    /// *RunningUnixModel*, which allows you to call functions such as train or evaluate on the
+    /// model.
+    pub async fn run_custom<'a>(
+        &self,
+        program: &str,
+        options: &RunBinOptions<'a>,
+    ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
+        log::trace!("Executing model using program {program}");
+
+        let to_execute: spawn::ModelToExecute<String> =
+            spawn::ModelToExecute::Bin { path: program };
+        self.inner_run(
+            to_execute,
+            std::env::current_dir().unwrap(),
+            options.inherit_env,
+            options.with_command.as_ref(),
+            None,
+        )
+        .await
+    }
+
     /// Execute a Decthings model which is defined by a binary executable, which is the case for
     /// compiled languages like Rust or Go.
     ///
@@ -125,7 +151,7 @@ impl ModelExecutor {
         );
 
         let to_execute: spawn::ModelToExecute<String> = spawn::ModelToExecute::Bin {
-            path: model_file.to_str().unwrap(),
+            path: &model_file.to_string_lossy(),
         };
         self.inner_run(
             to_execute,
@@ -149,7 +175,7 @@ impl ModelExecutor {
         model_dir: &Path,
         options: &RunNodeJsOptions<'a>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
-        let index_js = model_dir.join("index.js").to_str().unwrap().to_owned();
+        let index_js = model_dir.join("index.js").to_string_lossy().to_string();
         log::trace!("Executing model using Node.js at {index_js}");
         self.inner_run(
             spawn::ModelToExecute::NodeJs {
@@ -175,7 +201,7 @@ impl ModelExecutor {
         model_dir: &Path,
         options: &RunPythonOptions<'a>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
-        let main_py = model_dir.join("main.py").to_str().unwrap().to_owned();
+        let main_py = model_dir.join("main.py").to_string_lossy().to_string();
         log::trace!("Executing model using Python at {main_py}");
         self.inner_run(
             spawn::ModelToExecute::Python {
