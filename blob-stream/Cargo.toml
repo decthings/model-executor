@@ -1,0 +1,10 @@
+[package]
+name = "blob-stream"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+auto_impl = "1"
+futures = "0.3"
+pin-project = "1"
+tokio = { version = "1", features = ["full"] }

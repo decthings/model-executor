@@ -115,7 +115,7 @@ pub trait DataLoader: Send + Sync {
         &self,
         start_index: u32,
         amount: u32,
-    ) -> Pin<Box<dyn Future<Output = Box<dyn super::Blobs + Send + '_>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Box<dyn blob_stream::Blobs + Send + '_>> + Send + '_>>;
     fn shuffle(&self, others: &[u32]) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
@@ -123,7 +123,7 @@ pub trait StateProvider: Send + Sync {
     fn provide<'a>(
         &'a self,
         names: Vec<String>,
-        blobs: Box<dyn super::Blobs + Send + 'a>,
+        blobs: Box<dyn blob_stream::Blobs + Send + 'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
@@ -147,7 +147,7 @@ pub trait TrainTracker: Send + Sync {
     fn metrics<'a>(
         &'a self,
         names: Vec<String>,
-        blobs: Box<dyn super::Blobs + Send + 'a>,
+        blobs: Box<dyn blob_stream::Blobs + Send + 'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
@@ -194,7 +194,7 @@ pub struct EvaluateOptions<
             Result<
                 (
                     Vec<super::spawn::rpc::types::EvaluateOutput>,
-                    Box<dyn super::Blobs + Send + 'b>,
+                    Box<dyn blob_stream::Blobs + Send + 'b>,
                 ),
                 CallFunctionError,
             >,

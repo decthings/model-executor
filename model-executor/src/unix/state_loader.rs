@@ -12,19 +12,19 @@ impl super::DataLoader for DataLoaderFromState {
         &self,
         start_index: u32,
         amount: u32,
-    ) -> Pin<Box<dyn Future<Output = Box<dyn super::Blobs + Send + '_>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn blob_stream::Blobs + Send + '_>> + Send + '_>> {
         Box::pin(async move {
             if amount < 1 || start_index > 0 {
-                return Box::new(super::blobs::ListBlobs::<Vec<Vec<u8>>, Vec<u8>>::from(
+                return Box::new(blob_stream::ListBlobs::<Vec<Vec<u8>>, Vec<u8>>::from(
                     vec![],
-                )) as Box<dyn super::Blobs + Send>;
+                )) as Box<dyn blob_stream::Blobs + Send>;
             }
 
             let reader = self.inner.read().await;
 
             struct ReaderBlobs<'a>(u64, Option<Pin<Box<dyn AsyncRead + Send + 'a>>>);
 
-            impl super::Blobs for ReaderBlobs<'_> {
+            impl blob_stream::Blobs for ReaderBlobs<'_> {
                 fn amount(&self) -> u32 {
                     1
                 }
@@ -49,7 +49,8 @@ impl super::DataLoader for DataLoaderFromState {
                 }
             }
 
-            Box::new(ReaderBlobs(self.byte_size, Some(reader))) as Box<dyn super::Blobs + Send>
+            Box::new(ReaderBlobs(self.byte_size, Some(reader)))
+                as Box<dyn blob_stream::Blobs + Send>
         })
     }
 

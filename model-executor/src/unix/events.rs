@@ -20,7 +20,7 @@ impl super::spawn::rpc::ChildEventCallbacks for EventCallbacks {
     fn on_event<'a>(
         &'a self,
         event: super::spawn::rpc::types::EventMessage,
-        blobs: Box<dyn super::Blobs + Send + 'a>,
+        blobs: Box<dyn blob_stream::Blobs + Send + 'a>,
     ) -> std::pin::Pin<Box<dyn futures::Future<Output = ()> + Send + 'a>> {
         match event {
             super::spawn::rpc::types::EventMessage::ModelSessionInitialized { error } => {

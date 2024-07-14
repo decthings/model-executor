@@ -1,14 +1,14 @@
-pub mod blobs;
 mod events;
 mod spawn;
 mod state_loader;
 mod types;
 
+pub use blob_stream;
+
 use std::{collections::HashMap, future::Future, path::Path, pin::Pin, sync::Arc};
 
 use atomic_counter::AtomicCounter;
 
-pub use blobs::Blobs;
 pub use spawn::ModelExecutor;
 pub use spawn::*;
 use tokio::sync::Mutex;
@@ -424,7 +424,7 @@ impl UnixInstantiated {
                     Result<
                         (
                             Vec<spawn::rpc::types::EvaluateOutput>,
-                            Box<dyn Blobs + Send + 'b>,
+                            Box<dyn blob_stream::Blobs + Send + 'b>,
                         ),
                         types::CallFunctionError,
                     >,

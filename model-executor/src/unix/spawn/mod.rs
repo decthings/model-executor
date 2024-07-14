@@ -157,7 +157,7 @@ exports.default = {}",
                             fn on_event<'a>(
                                 &'a self,
                                 event: rpc::types::EventMessage,
-                                blobs: Box<dyn crate::unix::Blobs + Send + 'a>,
+                                blobs: Box<dyn blob_stream::Blobs + Send + 'a>,
                             ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
                             {
                                 Box::pin(async move {

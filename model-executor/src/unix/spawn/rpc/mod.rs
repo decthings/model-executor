@@ -4,8 +4,6 @@ use atomic_counter::AtomicCounter;
 use std::{collections::HashMap, future::Future, path::Path, pin::Pin, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::unix::Blobs;
-
 pub const MESSAGE_BYTE: u8 = 0;
 pub const DATA_BYTE: u8 = 1;
 
@@ -15,7 +13,7 @@ pub trait ChildEventCallbacks {
     fn on_event<'a>(
         &'a self,
         event: types::EventMessage,
-        blobs: Box<dyn Blobs + Send + 'a>,
+        blobs: Box<dyn blob_stream::Blobs + Send + 'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     #[must_use]
@@ -35,7 +33,10 @@ pub enum CallMethodOnChildError {
 type ResponseCallback = Box<
     dyn for<'b> FnOnce(
             String,
-            Result<(serde_json::Value, Box<dyn Blobs + Send + 'b>), CallMethodOnChildError>,
+            Result<
+                (serde_json::Value, Box<dyn blob_stream::Blobs + Send + 'b>),
+                CallMethodOnChildError,
+            >,
         ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
         + Send
         + 'static,
@@ -67,10 +68,8 @@ impl ChildRpcListener {
                     self.unix_reader.read_exact(&mut json).await?;
 
                     {
-                        let mut blobs = crate::unix::blobs::BlobsFromReader::new(
-                            &mut self.unix_reader,
-                            num_blobs,
-                        );
+                        let mut blobs =
+                            blob_stream::BlobsFromReader::new(&mut self.unix_reader, num_blobs);
 
                         match serde_json::from_slice::<ResultOrEvent>(&json).unwrap() {
                             ResultOrEvent::Result(val) => {
@@ -274,7 +273,13 @@ impl ChildRpc {
         params: &types::EvaluateCommand,
         result_cb: impl for<'b> FnOnce(
                 String,
-                Result<(types::EvaluateResult, Box<dyn Blobs + Send + 'b>), CallMethodOnChildError>,
+                Result<
+                    (
+                        types::EvaluateResult,
+                        Box<dyn blob_stream::Blobs + Send + 'b>,
+                    ),
+                    CallMethodOnChildError,
+                >,
             ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
             + Send
             + 'static,
@@ -378,7 +383,7 @@ impl ChildRpc {
     pub async fn provide_data(
         &self,
         request_id: u32,
-        mut blobs: impl Blobs,
+        mut blobs: impl blob_stream::Blobs,
     ) -> Result<(), tokio::io::Error> {
         log::trace!(
             "Providing {} data blobs for data request {request_id} to spawned model #{}",
