@@ -130,14 +130,14 @@ pub trait StateProvider: Send + Sync {
 pub trait StateLoader: Send + Sync {
     fn read(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Pin<Box<dyn AsyncRead + Send + '_>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Pin<Box<dyn AsyncRead + Send + Sync + '_>>> + Send + '_>>;
 }
 
 impl<T: AsRef<[u8]> + Send + Sync> StateLoader for T {
     fn read(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Pin<Box<dyn AsyncRead + Send + '_>>> + Send + '_>> {
-        Box::pin(async move { Box::pin(self.as_ref()) as Pin<Box<dyn AsyncRead + Send>> })
+    ) -> Pin<Box<dyn Future<Output = Pin<Box<dyn AsyncRead + Send + Sync + '_>>> + Send + '_>> {
+        Box::pin(async move { Box::pin(self.as_ref()) as Pin<Box<dyn AsyncRead + Send + Sync>> })
     }
 }
 

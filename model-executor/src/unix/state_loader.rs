@@ -22,7 +22,7 @@ impl super::DataLoader for DataLoaderFromState {
 
             let reader = self.inner.read().await;
 
-            struct ReaderBlobs<'a>(u64, Option<Pin<Box<dyn AsyncRead + Send + 'a>>>);
+            struct ReaderBlobs<'a>(u64, Option<Pin<Box<dyn AsyncRead + Send + Sync + 'a>>>);
 
             impl blob_stream::Blobs for ReaderBlobs<'_> {
                 fn amount(&self) -> u32 {
@@ -34,7 +34,7 @@ impl super::DataLoader for DataLoaderFromState {
                 ) -> futures::future::BoxFuture<
                     'a,
                     tokio::io::Result<
-                        Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + 'a>>)>,
+                        Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + Sync + 'a>>)>,
                     >,
                 > {
                     Box::pin(async move { Ok(self.1.take().map(|x| (self.0, x))) })

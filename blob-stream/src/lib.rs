@@ -28,7 +28,7 @@ pub trait Blobs {
         &'a mut self,
     ) -> BoxFuture<
         'a,
-        tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + 'a>>)>>,
+        tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + Sync + 'a>>)>>,
     >;
 }
 
@@ -62,7 +62,7 @@ impl<L: AsRef<[S]> + Send, S: AsRef<[u8]> + Send> Blobs for ListBlobs<L, S> {
         &'a mut self,
     ) -> BoxFuture<
         'a,
-        tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + 'a>>)>>,
+        tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + Sync + 'a>>)>>,
     > {
         Box::pin(async move {
             let Some(data) = self.data.as_ref().get(self.index) else {
@@ -71,7 +71,7 @@ impl<L: AsRef<[S]> + Send, S: AsRef<[u8]> + Send> Blobs for ListBlobs<L, S> {
             self.index += 1;
             Ok(Some((
                 data.as_ref().len() as u64,
-                Box::pin(data.as_ref()) as Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+                Box::pin(data.as_ref()) as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>,
             )))
         })
     }
@@ -144,7 +144,7 @@ pub struct BlobsFromReader<R: tokio::io::AsyncRead + Send + Unpin> {
     did_err: Arc<std::sync::Mutex<bool>>,
 }
 
-impl<R: tokio::io::AsyncRead + Send + Unpin> BlobsFromReader<R> {
+impl<R: tokio::io::AsyncRead + Send + Sync + Unpin> BlobsFromReader<R> {
     pub fn new(reader: R, amount: u32) -> Self {
         Self {
             amount,
@@ -201,7 +201,7 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> BlobsFromReader<R> {
     }
 }
 
-impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromReader<R> {
+impl<R: tokio::io::AsyncRead + Send + Sync + Unpin> Blobs for BlobsFromReader<R> {
     fn amount(&self) -> u32 {
         self.amount
     }
@@ -214,7 +214,7 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromReader<R> {
         &'a mut self,
     ) -> BoxFuture<
         'a,
-        tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + 'a>>)>>,
+        tokio::io::Result<Option<(u64, Pin<Box<dyn tokio::io::AsyncRead + Send + Sync + 'a>>)>>,
     > {
         if self.remaining() == 0 {
             return Box::pin(async { Ok(None) });
@@ -251,7 +251,7 @@ impl<R: tokio::io::AsyncRead + Send + Unpin> Blobs for BlobsFromReader<R> {
                     blobs,
                     index,
                     did_err: Arc::clone(&self.did_err),
-                }) as Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+                }) as Pin<Box<dyn tokio::io::AsyncRead + Send + Sync>>,
             )))
         })
     }
