@@ -445,6 +445,7 @@ impl UnixInstantiated {
         let cmd = spawn::rpc::types::EvaluateCommand {
             instantiated_model_id: self.instantiated_model_id.clone(),
             params: child_params,
+            expected_output_types: options.expected_output_types,
         };
 
         let (res_tx, res_rx) = tokio::sync::oneshot::channel();

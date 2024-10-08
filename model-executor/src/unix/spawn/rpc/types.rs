@@ -134,6 +134,7 @@ pub struct CancelTrainCommand {
 pub struct EvaluateCommand {
     pub instantiated_model_id: String,
     pub params: Vec<Param>,
+    pub expected_output_types: Vec<decthings_api::tensor::DecthingsParameterDefinition>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

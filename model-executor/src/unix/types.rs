@@ -203,6 +203,7 @@ pub struct EvaluateOptions<
         + 'static,
 > {
     pub params: HashMap<String, Param>,
+    pub expected_output_types: Vec<decthings_api::tensor::DecthingsParameterDefinition>,
     pub result_cb: F,
 }
 

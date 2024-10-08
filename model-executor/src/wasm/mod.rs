@@ -233,6 +233,7 @@ impl RunningWasmModel {
 
 pub struct EvaluateOptions {
     pub params: HashMap<String, Param>,
+    pub expected_output_types: Vec<decthings_api::tensor::DecthingsParameterDefinition>,
 }
 
 pub struct EvaluateOutput {
@@ -277,6 +278,73 @@ impl WasmInstantiated {
                     })
                 })
                 .collect::<wasmtime::Result<_>>()?,
+            expected_output_types: options
+                .expected_output_types
+                .into_iter()
+                .map(
+                    |x| bindings::exports::decthings::model::model::DecthingsParameterDefinition {
+                        name: x.name,
+                        rules: bindings::exports::decthings::model::model::DecthingsTensorRules {
+                            shape: x.rules.shape,
+                            allowed_types: x
+                                .rules
+                                .allowed_types
+                                .into_iter()
+                                .map(|y| match y {
+                                    decthings_api::tensor::DecthingsElementType::F32 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::F32
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::F64 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::F64
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::I8 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::I8
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::I16 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::I16
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::I32 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::I32
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::I64 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::I64
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::U8 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::U8
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::U16 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::U16
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::U32 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::U32
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::U64 => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::U64
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::String => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::String
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::Boolean => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::Boolean
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::Binary => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::Binary
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::Image => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::Image
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::Audio => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::Audio
+                                    }
+                                    decthings_api::tensor::DecthingsElementType::Video => {
+                                        bindings::exports::decthings::model::model::DecthingsElementType::Video
+                                    }
+                                })
+                                .collect(),
+                        },
+                    },
+                )
+                .collect(),
         };
 
         let res = self
