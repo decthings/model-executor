@@ -284,6 +284,7 @@ impl WasmInstantiated {
                 .map(
                     |x| bindings::exports::decthings::model::model::DecthingsParameterDefinition {
                         name: x.name,
+                        required: x.required,
                         rules: bindings::exports::decthings::model::model::DecthingsTensorRules {
                             shape: x.rules.shape,
                             allowed_types: x
