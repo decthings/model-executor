@@ -1,0 +1,17 @@
+name: Clippy and test
+on: [push]
+jobs:
+  clippy-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install @decthings/model
+        run: npm i -g @decthings/model
+
+      - name: Cargo clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --all --all-features
