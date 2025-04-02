@@ -25,10 +25,10 @@ pub struct Param {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OtherModelWithState {
+pub struct OtherModelWithWeights {
     pub id: String,
     pub mount_path: String,
-    pub state: Vec<Param>,
+    pub weights: Vec<Param>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -39,14 +39,14 @@ pub struct InitializeCommand {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateModelStateCommand {
+pub struct InitializeWeightsCommand {
     pub params: Vec<Param>,
-    pub other_models: Vec<OtherModelWithState>,
+    pub other_models: Vec<OtherModelWithWeights>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "code")]
-pub enum CreateModelStateError {
+pub enum InitializeWeightsError {
     Exception {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<String>,
@@ -55,9 +55,9 @@ pub enum CreateModelStateError {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CreateModelStateResult {
+pub struct InitializeWeightsResult {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<CreateModelStateError>,
+    pub error: Option<InitializeWeightsError>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -71,7 +71,7 @@ pub struct OtherModel {
 #[serde(rename_all = "camelCase")]
 pub struct InstantiateModelCommand {
     pub instantiated_model_id: String,
-    pub state: Vec<Param>,
+    pub weights: Vec<Param>,
     pub other_models: Vec<OtherModel>,
 }
 
@@ -165,13 +165,13 @@ pub struct EvaluateResult {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetModelStateCommand {
+pub struct GetWeightsCommand {
     pub instantiated_model_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "code")]
-pub enum GetModelStateError {
+pub enum GetWeightsError {
     Exception {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<String>,
@@ -181,9 +181,9 @@ pub enum GetModelStateError {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GetModelStateResult {
+pub struct GetWeightsResult {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<GetModelStateError>,
+    pub error: Option<GetWeightsError>,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -191,10 +191,10 @@ pub struct GetModelStateResult {
 #[serde(rename_all = "camelCase")]
 #[serde(tag = "method", content = "params")]
 pub(crate) enum CommandMessageWithResponseWithId<'a> {
-    CallCreateModelState {
+    CallInitializeWeights {
         id: &'a str,
         #[serde(flatten)]
-        cmd: &'a CreateModelStateCommand,
+        cmd: &'a InitializeWeightsCommand,
     },
     CallInstantiateModel {
         id: &'a str,
@@ -211,28 +211,28 @@ pub(crate) enum CommandMessageWithResponseWithId<'a> {
         #[serde(flatten)]
         cmd: &'a EvaluateCommand,
     },
-    CallGetModelState {
+    CallGetWeights {
         id: &'a str,
         #[serde(flatten)]
-        cmd: &'a GetModelStateCommand,
+        cmd: &'a GetWeightsCommand,
     },
 }
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CommandMessageWithResponse<'a> {
-    CallCreateModelState(&'a CreateModelStateCommand),
+    CallInitializeWeights(&'a InitializeWeightsCommand),
     CallInstantiateModel(&'a InstantiateModelCommand),
     CallTrain(&'a TrainCommand),
     CallEvaluate(&'a EvaluateCommand),
-    CallGetModelState(&'a GetModelStateCommand),
+    CallGetWeights(&'a GetWeightsCommand),
 }
 
 impl CommandMessageWithResponse<'_> {
     pub fn with_id<'a>(&'a self, id: &'a str) -> CommandMessageWithResponseWithId<'a> {
         match self {
-            CommandMessageWithResponse::CallCreateModelState(cmd) => {
-                CommandMessageWithResponseWithId::CallCreateModelState { id, cmd }
+            CommandMessageWithResponse::CallInitializeWeights(cmd) => {
+                CommandMessageWithResponseWithId::CallInitializeWeights { id, cmd }
             }
             CommandMessageWithResponse::CallInstantiateModel(cmd) => {
                 CommandMessageWithResponseWithId::CallInstantiateModel { id, cmd }
@@ -243,8 +243,8 @@ impl CommandMessageWithResponse<'_> {
             CommandMessageWithResponse::CallEvaluate(cmd) => {
                 CommandMessageWithResponseWithId::CallEvaluate { id, cmd }
             }
-            CommandMessageWithResponse::CallGetModelState(cmd) => {
-                CommandMessageWithResponseWithId::CallGetModelState { id, cmd }
+            CommandMessageWithResponse::CallGetWeights(cmd) => {
+                CommandMessageWithResponseWithId::CallGetWeights { id, cmd }
             }
         }
     }
@@ -295,7 +295,7 @@ pub enum EventMessage {
         names: Vec<String>,
     },
     #[serde(rename_all = "camelCase")]
-    ProvideStateData {
+    ProvideWeightsData {
         command_id: String,
         names: Vec<String>,
     },

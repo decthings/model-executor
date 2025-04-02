@@ -12,7 +12,7 @@ pub struct EventCallbacks {
         >,
     >,
     pub datasets: Arc<Mutex<HashMap<String, Arc<Box<dyn super::DataLoader>>>>>,
-    pub state_providers: Arc<Mutex<HashMap<String, Arc<Box<dyn super::StateProvider>>>>>,
+    pub weights_providers: Arc<Mutex<HashMap<String, Arc<Box<dyn super::WeightsProvider>>>>>,
     pub training_sessions: Arc<Mutex<HashMap<String, Arc<Box<dyn super::TrainTracker>>>>>,
 }
 
@@ -36,15 +36,15 @@ impl super::spawn::rpc::ChildEventCallbacks for EventCallbacks {
                         .ok();
                 })
             }
-            super::spawn::rpc::types::EventMessage::ProvideStateData { command_id, names } => {
+            super::spawn::rpc::types::EventMessage::ProvideWeightsData { command_id, names } => {
                 Box::pin(async move {
-                    let state_providers = self.state_providers.lock().await;
-                    let Some(state_provider) = state_providers.get(&command_id) else {
+                    let weights_providers = self.weights_providers.lock().await;
+                    let Some(weights_provider) = weights_providers.get(&command_id) else {
                         return;
                     };
-                    let state_provider = Arc::clone(state_provider);
-                    drop(state_providers);
-                    state_provider.provide(names, blobs).await;
+                    let weights_provider = Arc::clone(weights_provider);
+                    drop(weights_providers);
+                    weights_provider.provide(names, blobs).await;
                 })
             }
             super::spawn::rpc::types::EventMessage::TrainingProgress {

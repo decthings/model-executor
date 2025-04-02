@@ -193,16 +193,16 @@ impl ChildRpc {
         })
     }
 
-    pub fn call_create_model_state<'a>(
+    pub fn call_initialize_weights<'a>(
         &'a self,
-        params: &types::CreateModelStateCommand,
+        params: &types::InitializeWeightsCommand,
     ) -> (
         String,
-        impl Future<Output = Result<types::CreateModelStateResult, CallMethodOnChildError>> + 'a,
+        impl Future<Output = Result<types::InitializeWeightsResult, CallMethodOnChildError>> + 'a,
     ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (id, fut) = self.call_method(
-            types::CommandMessageWithResponse::CallCreateModelState(params),
+            types::CommandMessageWithResponse::CallInitializeWeights(params),
             Box::new(|_, res| {
                 Box::pin(async move {
                     let res = res.and_then(|(res, _)| {
@@ -272,17 +272,17 @@ impl ChildRpc {
         &'a self,
         params: &types::EvaluateCommand,
         result_cb: impl for<'b> FnOnce(
-                String,
-                Result<
-                    (
-                        types::EvaluateResult,
-                        Box<dyn blob_stream::Blobs + Send + 'b>,
-                    ),
-                    CallMethodOnChildError,
-                >,
-            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
-            + Send
-            + 'static,
+            String,
+            Result<
+                (
+                    types::EvaluateResult,
+                    Box<dyn blob_stream::Blobs + Send + 'b>,
+                ),
+                CallMethodOnChildError,
+            >,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
+        + Send
+        + 'static,
     ) -> (String, impl Future<Output = ()> + 'a) {
         self.call_method(
             types::CommandMessageWithResponse::CallEvaluate(params),
@@ -299,16 +299,16 @@ impl ChildRpc {
         )
     }
 
-    pub fn call_get_model_state<'a>(
+    pub fn call_get_weights<'a>(
         &'a self,
-        params: &types::GetModelStateCommand,
+        params: &types::GetWeightsCommand,
     ) -> (
         String,
-        impl Future<Output = Result<types::GetModelStateResult, CallMethodOnChildError>> + 'a,
+        impl Future<Output = Result<types::GetWeightsResult, CallMethodOnChildError>> + 'a,
     ) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let (id, fut) = self.call_method(
-            types::CommandMessageWithResponse::CallGetModelState(params),
+            types::CommandMessageWithResponse::CallGetWeights(params),
             Box::new(|_, res| {
                 Box::pin(async move {
                     let res = res.and_then(|(res, _)| {

@@ -2,12 +2,12 @@ use std::{future::Future, pin::Pin};
 
 use tokio::io::AsyncRead;
 
-pub struct DataLoaderFromState {
+pub struct DataLoaderFromWeights {
     pub byte_size: u64,
-    pub inner: Box<dyn super::StateLoader>,
+    pub inner: Box<dyn super::WeightsLoader>,
 }
 
-impl super::DataLoader for DataLoaderFromState {
+impl super::DataLoader for DataLoaderFromWeights {
     fn read(
         &self,
         start_index: u32,
@@ -41,11 +41,7 @@ impl super::DataLoader for DataLoaderFromState {
                 }
 
                 fn remaining(&self) -> u32 {
-                    if self.1.is_some() {
-                        1
-                    } else {
-                        0
-                    }
+                    if self.1.is_some() { 1 } else { 0 }
                 }
             }
 

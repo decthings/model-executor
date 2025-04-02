@@ -14,11 +14,11 @@ pub trait DataLoader: Send + 'static {
     fn shuffle(&mut self, others: &[u32]);
 }
 
-pub trait StateProvider: Send + 'static {
+pub trait WeightsProvider: Send + 'static {
     fn provide(&self, data: Vec<(String, Vec<u8>)>);
 }
 
-pub trait StateLoader: Send + 'static {
+pub trait WeightsLoader: Send + 'static {
     fn read(&self) -> Vec<u8>;
 }
 
@@ -58,21 +58,21 @@ pub struct Param {
     pub data_loader: Box<dyn DataLoader>,
 }
 
-pub struct StateKey {
+pub struct WeightKey {
     pub byte_size: u64,
-    pub state_loader: Box<dyn StateLoader>,
+    pub weights_loader: Box<dyn WeightsLoader>,
 }
 
-pub struct OtherModelWithState {
+pub struct OtherModelWithWeights {
     pub model_id: String,
     pub mount_path: String,
-    pub state: HashMap<String, StateKey>,
+    pub weights: HashMap<String, WeightKey>,
 }
 
-pub struct CreateModelStateOptions {
+pub struct InitializeWeightsOptions {
     pub params: HashMap<String, Param>,
-    pub state_provider: Box<dyn StateProvider>,
-    pub other_models: Vec<OtherModelWithState>,
+    pub weights_provider: Box<dyn WeightsProvider>,
+    pub other_models: Vec<OtherModelWithWeights>,
 }
 
 pub struct OtherModel {
@@ -81,7 +81,7 @@ pub struct OtherModel {
 }
 
 pub struct InstantiateModelOptions {
-    pub state: HashMap<String, StateKey>,
+    pub weights: HashMap<String, WeightKey>,
     pub other_models: Vec<OtherModel>,
 }
 
@@ -110,7 +110,7 @@ impl RunningWasmModel {
         wasmtime_wasi::add_to_linker_sync(&mut linker).unwrap();
 
         let (bindings, _) =
-            bindings::ModelRunner::instantiate(&mut store, &component, &linker).unwrap();
+            bindings::ModelRunner::instantiate(&mut store, component, &linker).unwrap();
 
         Ok(Self {
             store: Arc::new(Mutex::new(store)),
@@ -122,18 +122,18 @@ impl RunningWasmModel {
         self.store.lock().unwrap()
     }
 
-    /// Call the *create_model_state* function on the running model.
+    /// Call the *initialize_weights* function on the running model.
     ///
-    /// The function takes a list of parameters and outputs a new model state. A model state is
-    /// some arbitrary binary data which contains the trained model. For a neural network, the
-    /// state would contain the weights and biases of the neurons.
-    pub fn create_model_state(
+    /// The function takes a list of parameters and outputs new model weights. Model weights can
+    /// be some arbitrary binary data which contains the trained model. For a neural network,
+    /// the weights would contain the weights and biases of the neurons.
+    pub fn initialize_weights(
         &self,
-        options: CreateModelStateOptions,
+        options: InitializeWeightsOptions,
     ) -> Result<(), CallFunctionError> {
         let mut store = self.store.lock().unwrap();
 
-        let options = bindings::exports::decthings::model::model::CreateModelStateOptions {
+        let options = bindings::exports::decthings::model::model::InitializeWeightsOptions {
             params: options
                 .params
                 .into_iter()
@@ -146,26 +146,26 @@ impl RunningWasmModel {
                     })
                 })
                 .collect::<wasmtime::Result<_>>()?,
-            state_provider: store.data_mut().table.push(options.state_provider)?,
+            weights_provider: store.data_mut().table.push(options.weights_provider)?,
             other_models: options
                 .other_models
                 .into_iter()
                 .map(|other_model| {
                     Ok(
-                        bindings::exports::decthings::model::model::OtherModelWithState {
+                        bindings::exports::decthings::model::model::OtherModelWithWeights {
                             model_id: other_model.model_id,
                             mount_path: other_model.mount_path,
-                            state: other_model
-                                .state
+                            weights: other_model
+                                .weights
                                 .into_iter()
-                                .map(|(key, state)| {
-                                    Ok(bindings::exports::decthings::model::model::StateKey {
+                                .map(|(key, weight)| {
+                                    Ok(bindings::exports::decthings::model::model::WeightKey {
                                         key,
-                                        byte_size: state.byte_size,
-                                        state_loader: store
+                                        byte_size: weight.byte_size,
+                                        weights_loader: store
                                             .data_mut()
                                             .table
-                                            .push(state.state_loader)?,
+                                            .push(weight.weights_loader)?,
                                     })
                                 })
                                 .collect::<wasmtime::Result<_>>()?,
@@ -177,14 +177,14 @@ impl RunningWasmModel {
 
         self.bindings
             .decthings_model_model()
-            .call_create_model_state(&mut *store, &options)??;
+            .call_initialize_weights(&mut *store, &options)??;
 
         Ok(())
     }
 
     /// Call the *instantiate_model* function on the running model.
     ///
-    /// The function loads a previously created or trained state and prepares it for execution. The
+    /// The function loads previously created or trained weights and prepares it for execution. The
     /// returned struct then allows you to call the functions evaluate and train.
     ///
     /// After you are done with the instantiate model, make sure to call *dispose*. Simply dropping
@@ -196,14 +196,14 @@ impl RunningWasmModel {
         let mut store = self.store.lock().unwrap();
 
         let options = bindings::exports::decthings::model::model::InstantiateModelOptions {
-            state: options
-                .state
+            weights: options
+                .weights
                 .into_iter()
-                .map(|(key, state)| {
-                    Ok(bindings::exports::decthings::model::model::StateKey {
+                .map(|(key, weight)| {
+                    Ok(bindings::exports::decthings::model::model::WeightKey {
                         key,
-                        byte_size: state.byte_size,
-                        state_loader: store.data_mut().table.push(state.state_loader)?,
+                        byte_size: weight.byte_size,
+                        weights_loader: store.data_mut().table.push(weight.weights_loader)?,
                     })
                 })
                 .collect::<wasmtime::Result<_>>()?,
@@ -246,8 +246,8 @@ pub struct TrainOptions {
     pub tracker: Box<dyn TrainTracker>,
 }
 
-pub struct GetModelStateOptions {
-    pub state_provider: Box<dyn StateProvider>,
+pub struct GetWeightsOptions {
+    pub weights_provider: Box<dyn WeightsProvider>,
 }
 
 pub struct WasmInstantiated {
@@ -369,10 +369,10 @@ impl WasmInstantiated {
     /// The function takes a set of parameters and trains the model. The *tracker* option is used
     /// to listen for events, such as progress and metrics.
     ///
-    /// After training, the *evaluate* function will use the new state. To save the trained model,
-    /// call the *get_model_state* function, which will output a binary state. The returned state
+    /// After training, the *evaluate* function will use the new weights. To save the trained model,
+    /// call the *get_weights* function, which will output the binary weights. The returned weights
     /// can then be loaded again using *instantiate_model*, which allows you to use the trained
-    /// state after the model is restarted.
+    /// weights after the model is restarted.
     pub fn train(&self, options: TrainOptions) -> Result<(), CallFunctionError> {
         let mut store = self.model.store.lock().unwrap();
 
@@ -401,22 +401,22 @@ impl WasmInstantiated {
         Ok(())
     }
 
-    /// Call the *get_model_state* function on the running model.
+    /// Call the *get_weights* function on the running model.
     ///
-    /// The function outputs the model state. If the *train* function was called on this
-    /// instantiated model, the function will output the new, trained state.
-    pub fn get_model_state(&self, options: GetModelStateOptions) -> Result<(), CallFunctionError> {
+    /// The function outputs the model weights. If the *train* function was called on this
+    /// instantiated model, the function will output the new, trained weights.
+    pub fn get_weights(&self, options: GetWeightsOptions) -> Result<(), CallFunctionError> {
         let mut store = self.model.store.lock().unwrap();
 
-        let options = bindings::exports::decthings::model::model::GetModelStateOptions {
-            state_provider: store.data_mut().table.push(options.state_provider)?,
+        let options = bindings::exports::decthings::model::model::GetWeightsOptions {
+            weights_provider: store.data_mut().table.push(options.weights_provider)?,
         };
 
         self.model
             .bindings
             .decthings_model_model()
             .instantiated()
-            .call_get_model_state(&mut *store, self.instantiated, options)??;
+            .call_get_weights(&mut *store, self.instantiated, options)??;
 
         Ok(())
     }

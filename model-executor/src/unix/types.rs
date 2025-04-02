@@ -2,18 +2,10 @@ use std::{collections::HashMap, future::Future, pin::Pin};
 
 use tokio::io::AsyncRead;
 
+#[derive(Default)]
 pub struct RunBinOptions<'a> {
     pub(crate) inherit_env: bool,
     pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + Send + Sync + 'a>>,
-}
-
-impl<'a> Default for RunBinOptions<'a> {
-    fn default() -> Self {
-        Self {
-            inherit_env: false,
-            with_command: None,
-        }
-    }
 }
 
 impl<'a> RunBinOptions<'a> {
@@ -31,20 +23,11 @@ impl<'a> RunBinOptions<'a> {
     }
 }
 
+#[derive(Default)]
 pub struct RunNodeJsOptions<'a> {
     pub(crate) flags: Vec<&'a str>,
     pub(crate) inherit_env: bool,
     pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + Send + Sync + 'a>>,
-}
-
-impl<'a> Default for RunNodeJsOptions<'a> {
-    fn default() -> Self {
-        Self {
-            flags: vec![],
-            inherit_env: false,
-            with_command: None,
-        }
-    }
 }
 
 impl<'a> RunNodeJsOptions<'a> {
@@ -67,20 +50,11 @@ impl<'a> RunNodeJsOptions<'a> {
     }
 }
 
+#[derive(Default)]
 pub struct RunPythonOptions<'a> {
     pub(crate) flags: Vec<&'a str>,
     pub(crate) inherit_env: bool,
     pub(crate) with_command: Option<Box<dyn Fn(&mut tokio::process::Command) + Send + Sync + 'a>>,
-}
-
-impl<'a> Default for RunPythonOptions<'a> {
-    fn default() -> Self {
-        Self {
-            flags: vec![],
-            inherit_env: false,
-            with_command: None,
-        }
-    }
 }
 
 impl<'a> RunPythonOptions<'a> {
@@ -119,7 +93,7 @@ pub trait DataLoader: Send + Sync {
     fn shuffle(&self, others: &[u32]) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
-pub trait StateProvider: Send + Sync {
+pub trait WeightsProvider: Send + Sync {
     fn provide<'a>(
         &'a self,
         names: Vec<String>,
@@ -127,13 +101,13 @@ pub trait StateProvider: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
-pub trait StateLoader: Send + Sync {
+pub trait WeightsLoader: Send + Sync {
     fn read(
         &self,
     ) -> Pin<Box<dyn Future<Output = Pin<Box<dyn AsyncRead + Send + Sync + '_>>> + Send + '_>>;
 }
 
-impl<T: AsRef<[u8]> + Send + Sync> StateLoader for T {
+impl<T: AsRef<[u8]> + Send + Sync> WeightsLoader for T {
     fn read(
         &self,
     ) -> Pin<Box<dyn Future<Output = Pin<Box<dyn AsyncRead + Send + Sync + '_>>> + Send + '_>> {
@@ -164,28 +138,28 @@ pub struct Param {
     pub data_loader: Box<dyn DataLoader>,
 }
 
-pub struct StateKey {
+pub struct WeightKey {
     pub byte_size: u64,
-    pub state_loader: Box<dyn StateLoader>,
+    pub weights_loader: Box<dyn WeightsLoader>,
 }
 
-pub struct OtherModelWithState {
+pub struct OtherModelWithWeights {
     pub mount_path: String,
-    pub state: HashMap<String, StateKey>,
+    pub weights: HashMap<String, WeightKey>,
 }
 
 pub struct OtherModel {
     pub mount_path: String,
 }
 
-pub struct CreateModelStateOptions {
+pub struct InitializeWeightsOptions {
     pub params: HashMap<String, Param>,
-    pub state_provider: Box<dyn StateProvider>,
-    pub other_models: HashMap<String, OtherModelWithState>,
+    pub weights_provider: Box<dyn WeightsProvider>,
+    pub other_models: HashMap<String, OtherModelWithWeights>,
 }
 
 pub struct InstantiateModelOptions {
-    pub state: HashMap<String, StateKey>,
+    pub weights: HashMap<String, WeightKey>,
     pub other_models: HashMap<String, OtherModel>,
 }
 
@@ -212,6 +186,6 @@ pub struct TrainOptions {
     pub tracker: Box<dyn TrainTracker>,
 }
 
-pub struct GetModelStateOptions {
-    pub state_provider: Box<dyn StateProvider>,
+pub struct GetWeightsOptions {
+    pub weights_provider: Box<dyn WeightsProvider>,
 }

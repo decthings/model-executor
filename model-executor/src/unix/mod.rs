@@ -1,7 +1,7 @@
 mod events;
 mod spawn;
-mod state_loader;
 mod types;
+mod weights_loader;
 
 pub use blob_stream;
 
@@ -49,8 +49,8 @@ impl ModelExecutor {
         let (initialized_tx, initialized_rx) = tokio::sync::oneshot::channel();
         let datasets = Arc::new(Mutex::new(HashMap::new()));
         let datasets_clone = Arc::clone(&datasets);
-        let state_providers = Arc::new(Mutex::new(HashMap::new()));
-        let state_providers_clone = Arc::clone(&state_providers);
+        let weights_providers = Arc::new(Mutex::new(HashMap::new()));
+        let weights_providers_clone = Arc::clone(&weights_providers);
         let training_sessions = Arc::new(Mutex::new(HashMap::new()));
         let training_sessions_clone = Arc::clone(&training_sessions);
 
@@ -60,7 +60,7 @@ impl ModelExecutor {
                     rpc,
                     on_initialized: Mutex::new(Some(initialized_tx)),
                     datasets,
-                    state_providers,
+                    weights_providers,
                     training_sessions,
                 })
                 .await;
@@ -97,7 +97,7 @@ impl ModelExecutor {
                 dataset_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
                 instantiated_model_id_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
                 datasets: datasets_clone,
-                state_providers: state_providers_clone,
+                weights_providers: weights_providers_clone,
                 training_session_id_counter: Arc::new(atomic_counter::ConsistentCounter::new(0)),
                 training_sessions: training_sessions_clone,
             },
@@ -111,10 +111,10 @@ impl ModelExecutor {
     /// Returns a tokio child which can be used to wait for or kill the child, and a
     /// *RunningUnixModel*, which allows you to call functions such as train or evaluate on the
     /// model.
-    pub async fn run_custom<'a>(
+    pub async fn run_custom(
         &self,
         program: &str,
-        options: &RunBinOptions<'a>,
+        options: &RunBinOptions<'_>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
         log::trace!("Executing model using program {program}");
 
@@ -138,10 +138,10 @@ impl ModelExecutor {
     /// Returns a tokio child which can be used to wait for or kill the child, and a
     /// *RunningUnixModel*, which allows you to call functions such as train or evaluate on the
     /// model.
-    pub async fn run_bin<'a>(
+    pub async fn run_bin(
         &self,
         model_dir: &Path,
-        options: &RunBinOptions<'a>,
+        options: &RunBinOptions<'_>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
         let model_file = model_dir.join("model");
 
@@ -170,10 +170,10 @@ impl ModelExecutor {
     /// Returns a tokio child which can be used to wait for or kill the child, and a
     /// *RunningUnixModel*, which allows you to call functions such as train or evaluate on the
     /// model.
-    pub async fn run_node_js<'a>(
+    pub async fn run_node_js(
         &self,
         model_dir: &Path,
-        options: &RunNodeJsOptions<'a>,
+        options: &RunNodeJsOptions<'_>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
         let index_js = model_dir.join("index.js").to_string_lossy().to_string();
         log::trace!("Executing model using Node.js at {index_js}");
@@ -196,10 +196,10 @@ impl ModelExecutor {
     /// Returns a tokio child which can be used to wait for or kill the child, and a
     /// *RunningUnixModel*, which allows you to call functions such as train or evaluate on the
     /// model.
-    pub async fn run_python<'a>(
+    pub async fn run_python(
         &self,
         model_dir: &Path,
-        options: &RunPythonOptions<'a>,
+        options: &RunPythonOptions<'_>,
     ) -> Result<(tokio::process::Child, RunningUnixModel), RunError> {
         let main_py = model_dir.join("main.py").to_string_lossy().to_string();
         log::trace!("Executing model using Python at {main_py}");
@@ -223,7 +223,7 @@ pub struct RunningUnixModel {
     dataset_counter: Arc<atomic_counter::ConsistentCounter>,
     instantiated_model_id_counter: Arc<atomic_counter::ConsistentCounter>,
     datasets: Arc<Mutex<HashMap<String, Arc<Box<dyn DataLoader>>>>>,
-    state_providers: Arc<Mutex<HashMap<String, Arc<Box<dyn StateProvider>>>>>,
+    weights_providers: Arc<Mutex<HashMap<String, Arc<Box<dyn WeightsProvider>>>>>,
     training_session_id_counter: Arc<atomic_counter::ConsistentCounter>,
     training_sessions: Arc<Mutex<HashMap<String, Arc<Box<dyn TrainTracker>>>>>,
 }
@@ -247,43 +247,45 @@ impl RunningUnixModel {
         }
     }
 
-    /// Call the *create_model_state* function on the running model.
+    /// Call the *initialize_weights* function on the running model.
     ///
-    /// The function takes a list of parameters and outputs a new model state. A model state is
-    /// some arbitrary binary data which contains the trained model. For a neural network, the
-    /// state would contain the weights and biases of the neurons.
-    pub async fn create_model_state(
+    /// The function takes a list of parameters and outputs new model weights. Model weights can
+    /// be some arbitrary binary data which contains the trained model. For a neural network,
+    /// the weights would contain the weights and biases of the neurons.
+    pub async fn initialize_weights(
         &self,
-        options: CreateModelStateOptions,
+        options: InitializeWeightsOptions,
     ) -> Result<(), types::CallFunctionError> {
         let (child_params, child_other_models) = {
             let mut datasets = self.datasets.lock().await;
             let child_params = options
                 .params
                 .into_iter()
-                .map(|(name, param)| self.add_dataset(&mut *datasets, name, param))
+                .map(|(name, param)| self.add_dataset(&mut datasets, name, param))
                 .collect();
             let child_other_models = options
                 .other_models
                 .into_iter()
                 .map(
-                    |(model_id, other_model)| spawn::rpc::types::OtherModelWithState {
+                    |(model_id, other_model)| spawn::rpc::types::OtherModelWithWeights {
                         id: model_id,
                         mount_path: other_model.mount_path,
-                        state: other_model
-                            .state
+                        weights: other_model
+                            .weights
                             .into_iter()
-                            .map(|(key, state)| {
+                            .map(|(key, weight)| {
                                 self.add_dataset(
-                                    &mut *datasets,
+                                    &mut datasets,
                                     key,
                                     Param {
                                         amount: 1,
-                                        total_byte_size: state.byte_size,
-                                        data_loader: Box::new(state_loader::DataLoaderFromState {
-                                            byte_size: state.byte_size,
-                                            inner: state.state_loader,
-                                        }),
+                                        total_byte_size: weight.byte_size,
+                                        data_loader: Box::new(
+                                            weights_loader::DataLoaderFromWeights {
+                                                byte_size: weight.byte_size,
+                                                inner: weight.weights_loader,
+                                            },
+                                        ),
                                     },
                                 )
                             })
@@ -294,17 +296,17 @@ impl RunningUnixModel {
             (child_params, child_other_models)
         };
 
-        let cmd = spawn::rpc::types::CreateModelStateCommand {
+        let cmd = spawn::rpc::types::InitializeWeightsCommand {
             params: child_params,
             other_models: child_other_models,
         };
 
-        let mut state_providers = self.state_providers.lock().await;
+        let mut weights_providers = self.weights_providers.lock().await;
 
-        let (cmd_id, fut) = self.rpc.call_create_model_state(&cmd);
+        let (cmd_id, fut) = self.rpc.call_initialize_weights(&cmd);
 
-        state_providers.insert(cmd_id.clone(), Arc::new(options.state_provider));
-        drop(state_providers);
+        weights_providers.insert(cmd_id.clone(), Arc::new(options.weights_provider));
+        drop(weights_providers);
 
         let res = fut.await;
 
@@ -314,20 +316,20 @@ impl RunningUnixModel {
                 datasets.remove(&param.dataset);
             }
             for other_model in cmd.other_models {
-                for param in other_model.state {
+                for param in other_model.weights {
                     datasets.remove(&param.dataset);
                 }
             }
         }
         {
-            let mut state_providers = self.state_providers.lock().await;
-            state_providers.remove(&cmd_id);
+            let mut weights_providers = self.weights_providers.lock().await;
+            weights_providers.remove(&cmd_id);
         }
 
         match res {
-            Ok(spawn::rpc::types::CreateModelStateResult { error: None }) => Ok(()),
-            Ok(spawn::rpc::types::CreateModelStateResult {
-                error: Some(spawn::rpc::types::CreateModelStateError::Exception { details }),
+            Ok(spawn::rpc::types::InitializeWeightsResult { error: None }) => Ok(()),
+            Ok(spawn::rpc::types::InitializeWeightsResult {
+                error: Some(spawn::rpc::types::InitializeWeightsError::Exception { details }),
             }) => Err(types::CallFunctionError::Exception { details }),
             Err(e) => Err(types::CallFunctionError::Rpc(e)),
         }
@@ -335,7 +337,7 @@ impl RunningUnixModel {
 
     /// Call the *instantiate_model* function on the running model.
     ///
-    /// The function loads a previously created or trained state and prepares it for execution. The
+    /// The function loads previously created or trained weights and prepares it for execution. The
     /// returned struct then allows you to call the functions evaluate and train.
     ///
     /// After you are done with the instantiate model, make sure to call *dispose*. Simply dropping
@@ -347,18 +349,18 @@ impl RunningUnixModel {
         let child_params = {
             let mut datasets = self.datasets.lock().await;
             options
-                .state
+                .weights
                 .into_iter()
-                .map(|(key, state)| {
+                .map(|(key, weight)| {
                     self.add_dataset(
-                        &mut *datasets,
+                        &mut datasets,
                         key,
                         Param {
                             amount: 1,
-                            total_byte_size: state.byte_size,
-                            data_loader: Box::new(state_loader::DataLoaderFromState {
-                                byte_size: state.byte_size,
-                                inner: state.state_loader,
+                            total_byte_size: weight.byte_size,
+                            data_loader: Box::new(weights_loader::DataLoaderFromWeights {
+                                byte_size: weight.byte_size,
+                                inner: weight.weights_loader,
                             }),
                         },
                     )
@@ -370,7 +372,7 @@ impl RunningUnixModel {
 
         let cmd = spawn::rpc::types::InstantiateModelCommand {
             instantiated_model_id: instantiated_model_id.clone(),
-            state: child_params,
+            weights: child_params,
             other_models: options
                 .other_models
                 .into_iter()
@@ -387,7 +389,7 @@ impl RunningUnixModel {
 
         {
             let mut datasets = self.datasets.lock().await;
-            for param in cmd.state {
+            for param in cmd.weights {
                 datasets.remove(&param.dataset);
             }
         }
@@ -421,16 +423,16 @@ impl UnixInstantiated {
         &self,
         options: EvaluateOptions<
             impl for<'b> FnOnce(
-                    Result<
-                        (
-                            Vec<spawn::rpc::types::EvaluateOutput>,
-                            Box<dyn blob_stream::Blobs + Send + 'b>,
-                        ),
-                        types::CallFunctionError,
-                    >,
-                ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
-                + Send
-                + 'static,
+                Result<
+                    (
+                        Vec<spawn::rpc::types::EvaluateOutput>,
+                        Box<dyn blob_stream::Blobs + Send + 'b>,
+                    ),
+                    types::CallFunctionError,
+                >,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'b>>
+            + Send
+            + 'static,
         >,
     ) {
         let child_params = {
@@ -438,7 +440,7 @@ impl UnixInstantiated {
             options
                 .params
                 .into_iter()
-                .map(|(name, param)| self.model.add_dataset(&mut *datasets, name, param))
+                .map(|(name, param)| self.model.add_dataset(&mut datasets, name, param))
                 .collect()
         };
 
@@ -507,16 +509,16 @@ impl UnixInstantiated {
     /// The function takes a set of parameters and trains the model. The *tracker* option is used
     /// to listen for events, such as progress and metrics.
     ///
-    /// After training, the *evaluate* function will use the new state. To save the trained model,
-    /// call the *get_model_state* function, which will output a binary state. The returned state
+    /// After training, the *evaluate* function will use the new weights. To save the trained model,
+    /// call the *get_weights* function, which will output the binary weights. The returned weights
     /// can then be loaded again using *instantiate_model*, which allows you to use the trained
-    /// state after the model is restarted.
+    /// weights after the model is restarted.
     pub async fn train(&self, options: TrainOptions) -> Result<(), types::CallFunctionError> {
         let mut datasets = self.model.datasets.lock().await;
         let child_params = options
             .params
             .into_iter()
-            .map(|(name, param)| self.model.add_dataset(&mut *datasets, name, param))
+            .map(|(name, param)| self.model.add_dataset(&mut datasets, name, param))
             .collect();
         drop(datasets);
 
@@ -561,34 +563,34 @@ impl UnixInstantiated {
         }
     }
 
-    /// Call the *get_model_state* function on the running model.
+    /// Call the *get_weights* function on the running model.
     ///
-    /// The function outputs the model state. If the *train* function was called on this
-    /// instantiated model, the function will output the new, trained state.
-    pub async fn get_model_state(
+    /// The function outputs the model weights. If the *train* function was called on this
+    /// instantiated model, the function will output the new, trained weights.
+    pub async fn get_weights(
         &self,
-        options: GetModelStateOptions,
+        options: GetWeightsOptions,
     ) -> Result<(), types::CallFunctionError> {
-        let cmd = spawn::rpc::types::GetModelStateCommand {
+        let cmd = spawn::rpc::types::GetWeightsCommand {
             instantiated_model_id: self.instantiated_model_id.clone(),
         };
 
-        let mut state_providers = self.model.state_providers.lock().await;
+        let mut weights_providers = self.model.weights_providers.lock().await;
 
-        let (cmd_id, fut) = self.model.rpc.call_get_model_state(&cmd);
+        let (cmd_id, fut) = self.model.rpc.call_get_weights(&cmd);
 
-        state_providers.insert(cmd_id.clone(), Arc::new(options.state_provider));
-        drop(state_providers);
+        weights_providers.insert(cmd_id.clone(), Arc::new(options.weights_provider));
+        drop(weights_providers);
 
         let res = fut.await;
 
         match res {
-            Ok(spawn::rpc::types::GetModelStateResult { error: None }) => Ok(()),
-            Ok(spawn::rpc::types::GetModelStateResult {
-                error: Some(spawn::rpc::types::GetModelStateError::Exception { details }),
+            Ok(spawn::rpc::types::GetWeightsResult { error: None }) => Ok(()),
+            Ok(spawn::rpc::types::GetWeightsResult {
+                error: Some(spawn::rpc::types::GetWeightsError::Exception { details }),
             }) => Err(types::CallFunctionError::Exception { details }),
-            Ok(spawn::rpc::types::GetModelStateResult {
-                error: Some(spawn::rpc::types::GetModelStateError::InstantiatedModelNotFound),
+            Ok(spawn::rpc::types::GetWeightsResult {
+                error: Some(spawn::rpc::types::GetWeightsError::InstantiatedModelNotFound),
             }) => {
                 unreachable!()
             }

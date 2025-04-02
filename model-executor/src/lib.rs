@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 #[cfg(unix)]
 pub mod unix;
 

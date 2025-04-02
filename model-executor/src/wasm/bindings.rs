@@ -2,17 +2,17 @@ use wasmtime::component::{Resource, ResourceTable};
 
 pub type HostDataLoaderDyn = Box<dyn super::DataLoader>;
 
-pub type HostStateProviderDyn = Box<dyn super::StateProvider>;
+pub type HostWeightsProviderDyn = Box<dyn super::WeightsProvider>;
 
-pub type HostStateLoaderDyn = Box<dyn super::StateLoader>;
+pub type HostWeightsLoaderDyn = Box<dyn super::WeightsLoader>;
 
 pub type HostTrainTrackerDyn = Box<dyn super::TrainTracker>;
 
 wasmtime::component::bindgen!({
     with: {
         "decthings:model/model-callbacks/data-loader": HostDataLoaderDyn,
-        "decthings:model/model-callbacks/state-provider": HostStateProviderDyn,
-        "decthings:model/model-callbacks/state-loader": HostStateLoaderDyn,
+        "decthings:model/model-callbacks/weights-provider": HostWeightsProviderDyn,
+        "decthings:model/model-callbacks/weights-loader": HostWeightsLoaderDyn,
         "decthings:model/model-callbacks/train-tracker": HostTrainTrackerDyn,
     },
     trappable_imports: true,
@@ -67,35 +67,35 @@ impl decthings::model::model_callbacks::HostDataLoader for Host {
     }
 }
 
-impl decthings::model::model_callbacks::HostStateProvider for Host {
+impl decthings::model::model_callbacks::HostWeightsProvider for Host {
     fn provide(
         &mut self,
-        self_: Resource<HostStateProviderDyn>,
+        self_: Resource<HostWeightsProviderDyn>,
         data: Vec<(String, Vec<u8>)>,
     ) -> wasmtime::Result<()> {
         debug_assert!(!self_.owned());
-        let state_provider = self.table.get(&self_)?;
-        state_provider.provide(data);
+        let weights_provider = self.table.get(&self_)?;
+        weights_provider.provide(data);
         Ok(())
     }
 
-    fn drop(&mut self, rep: Resource<HostStateProviderDyn>) -> wasmtime::Result<()> {
+    fn drop(&mut self, rep: Resource<HostWeightsProviderDyn>) -> wasmtime::Result<()> {
         debug_assert!(rep.owned());
-        let _state_provider = self.table.delete(rep)?;
+        let _weights_provider = self.table.delete(rep)?;
         Ok(())
     }
 }
 
-impl decthings::model::model_callbacks::HostStateLoader for Host {
-    fn read(&mut self, self_: Resource<HostStateLoaderDyn>) -> wasmtime::Result<Vec<u8>> {
+impl decthings::model::model_callbacks::HostWeightsLoader for Host {
+    fn read(&mut self, self_: Resource<HostWeightsLoaderDyn>) -> wasmtime::Result<Vec<u8>> {
         debug_assert!(!self_.owned());
-        let state_provider = self.table.get(&self_)?;
-        Ok(state_provider.read())
+        let weights_provider = self.table.get(&self_)?;
+        Ok(weights_provider.read())
     }
 
-    fn drop(&mut self, rep: Resource<HostStateLoaderDyn>) -> wasmtime::Result<()> {
+    fn drop(&mut self, rep: Resource<HostWeightsLoaderDyn>) -> wasmtime::Result<()> {
         debug_assert!(rep.owned());
-        let _state_loader = self.table.delete(rep)?;
+        let _weights_loader = self.table.delete(rep)?;
         Ok(())
     }
 }
@@ -125,7 +125,7 @@ impl decthings::model::model_callbacks::HostTrainTracker for Host {
 
     fn is_cancelled(
         &mut self,
-        self_: wasmtime::component::Resource<__with_name3>,
+        self_: wasmtime::component::Resource<HostTrainTrackerDyn>,
     ) -> wasmtime::Result<bool> {
         debug_assert!(!self_.owned());
         let train_tracker = self.table.get(&self_)?;
