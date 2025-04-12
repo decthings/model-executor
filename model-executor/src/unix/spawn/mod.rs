@@ -45,7 +45,7 @@ impl ModelExecutor {
         model: ModelToExecute<'_, S>,
     ) -> (
         tokio::process::Command,
-        impl Future<Output = (rpc::ChildRpc, rpc::ChildRpcListener)>,
+        impl Future<Output = (rpc::ChildRpc, rpc::ChildRpcListener)> + use<S>,
     ) {
         let model_count = self.model_counter.inc();
         let unixsocket_path = self.temp_dir.join(model_count.to_string());
